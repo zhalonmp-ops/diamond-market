@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Diamond Market — MLB Predictions</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#0c0b09;color:#c8b890;font-family:system-ui,-apple-system,sans-serif}
+input[type=date],input[type=number]{color-scheme:dark}
+select option{background:#111;color:#c8b890}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.fadein{animation:fadein 0.35s ease}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:#0c0b09}
+::-webkit-scrollbar-thumb{background:#2e2416;border-radius:2px}
+button:active{opacity:0.8}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback } = React;
+
+// ── PARK FACTORS ──────────────────────────────────────────────────────────────
+const PARK_FACTORS = {
+“Arizona Diamondbacks”:101,“Atlanta Braves”:100,“Baltimore Orioles”:100,
+“Boston Red Sox”:104,“Chicago Cubs”:103,“Chicago White Sox”:100,
+“Cincinnati Reds”:105,“Cleveland Guardians”:99,“Colorado Rockies”:115,
+“Detroit Tigers”:97,“Houston Astros”:102,“Kansas City Royals”:99,
+“Los Angeles Angels”:98,“Los Angeles Dodgers”:98,“Miami Marlins”:97,
+“Milwaukee Brewers”:100,“Minnesota Twins”:99,“New York Mets”:98,
+“New York Yankees”:102,“Oakland Athletics”:97,“Philadelphia Phillies”:103,
+“Pittsburgh Pirates”:97,“San Diego Padres”:96,“San Francisco Giants”:97,
+“Seattle Mariners”:96,“St. Louis Cardinals”:98,“Tampa Bay Rays”:97,
+“Texas Rangers”:103,“Toronto Blue Jays”:102,“Washington Nationals”:99,
+};
+
+// ── MLB API ───────────────────────────────────────────────────────────────────
+const MLB = “https://statsapi.mlb.com/api/v1”;
+async function get(path) {
+const r = await fetch(MLB + path);
+if (!r.ok) throw new Error(“HTTP “ + r.status);
+return r.json();
+}
+function daysAgo(n){ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+const FIP_C = 3.15;
+function calcFIP(hr,bb,hbp,k,ip){ return ip>0 ? ((13*hr)+3*(bb+(hbp||0))-(2*k))/ip+FIP_C : null; }
+
+async function fetchGames(date) {
+const d = await get(`/schedule?sportId=1&date=${date}&hydrate=probablePitcher,team,venue,weather`);
+if (!d.dates||!d.dates.length) return [];
+return d.dates[0].games.map(g=>({
+gamePk:g.gamePk, venue:g.venue?.name||””,
+time:g.gameDate?new Date(g.gameDate).toLocaleTimeString([],{hour:“2-digit”,minute:“2-digit”}):””,
+weather:g.weather?`${g.weather.temp}°F, ${g.weather.condition}, wind ${g.weather.wind}`:null,
+away:{id:g.teams.away.team.id,name:g.teams.away.team.name,pitcherId:g.teams.away.probablePitcher?.id||null,pitcherName:g.teams.away.probablePitcher?.fullName||“TBD”},
+home:{id:g.teams.home.team.id,name:g.teams.home.team.name,pitcherId:g.teams.home.probablePitcher?.id||null,pitcherName:g.teams.home.probablePitcher?.fullName||“TBD”},
+}));
+}
+
+async function fetchStarter(pid,yr) {
+if(!pid) return null;
+try {
+const d=await get(`/people/${pid}/stats?stats=season&group=pitching&season=${yr}`);
+const s=d.stats?.[0]?.splits?.[0]?.stat; if(!s) return null;
+const ip=parseFloat(s.inningsPitched)||0,hr=parseInt(s.homeRuns)||0,
+bb=parseInt(s.baseOnBalls)||0,hbp=parseInt(s.hitByPitch)||0,
+k=parseInt(s.strikeOuts)||0,gs=parseInt(s.gamesStarted)||1;
+const fip=calcFIP(hr,bb,hbp,k,ip);
+const xfip=ip>0?((13*(1.25*ip/9))+3*(bb+hbp)-(2*k))/ip+FIP_C:null;
+return { era:parseFloat(s.era)||4.50, whip:parseFloat(s.whip)||1.35,
+k9:parseFloat(s.strikeoutsPer9Inn)||8.5, bb9:parseFloat(s.walksPer9Inn)||3.2,
+fip:fip||parseFloat(s.era)*0.95||4.30, xfip:xfip||parseFloat(s.era)*0.93||4.20,
+ipsPerStart:ip/gs };
+} catch { return null; }
+}
+
+async function fetchHitting(id,yr) {
+try {
+let woba=null,babip=null;
+try { const ds=await get(`/teams/${id}/stats?stats=sabermetrics&group=hitting&season=${yr}`);
+const ss=ds.stats?.[0]?.splits?.[0]?.stat;
+if(ss){woba=parseFloat(ss.wOBA);babip=parseFloat(ss.babip);} } catch{}
+const d=await get(`/teams/${id}/stats?stats=season&group=hitting&season=${yr}`);
+const s=d.stats?.[0]?.splits?.[0]?.stat; if(!s) return null;
+const obp=parseFloat(s.obp)||0.320, slg=parseFloat(s.slg)||0.410;
+if(!woba||isNaN(woba)) woba=(obp*1.15+slg*0.62)/1.77;
+if(!babip||isNaN(babip)) babip=parseFloat(s.babip)||0.295;
+return { ba:parseFloat(s.avg)||0.250, obp, slg, woba, babip, ops:parseFloat(s.ops)||0.730 };
+} catch { return null; }
+}
+
+async function fetchPitching(id,yr) {
+try {
+const d=await get(`/teams/${id}/stats?stats=season&group=pitching&season=${yr}`);
+const s=d.stats?.[0]?.splits?.[0]?.stat; if(!s) return null;
+const ip=parseFloat(s.inningsPitched)||1000,hr=parseInt(s.homeRuns)||150,
+bb=parseInt(s.baseOnBalls)||450,hbp=parseInt(s.hitByPitch)||60,k=parseInt(s.strikeOuts)||1200;
+return { teamEra:parseFloat(s.era)||4.20, teamWhip:parseFloat(s.whip)||1.28,
+teamK9:parseFloat(s.strikeoutsPer9Inn)||8.5,
+teamFip:calcFIP(hr,bb,hbp,k,ip)||4.05,
+saves:parseInt(s.saves)||25, holds:parseInt(s.holds)||45, blownSaves:parseInt(s.blownSaves)||10 };
+} catch { return null; }
+}
+
+async function fetchDefense(id,yr) {
+try {
+const d=await get(`/teams/${id}/stats?stats=season&group=fielding&season=${yr}`);
+const s=d.stats?.[0]?.splits?.[0]?.stat; if(!s) return null;
+return { fieldingPct:parseFloat(s.fielding)||0.983, errors:parseInt(s.errors)||80 };
+} catch { return null; }
+}
+
+async function fetchRecent(id,date) {
+try {
+const d=await get(`/schedule?teamId=${id}&startDate=${daysAgo(20)}&endDate=${date}&sportId=1`);
+const games=(d.dates||[]).flatMap(x=>x.games).filter(g=>g.status?.abstractGameState===“Final”).slice(-10);
+if(!games.length) return {winPct:0.500};
+const wins=games.filter(g=>g.teams.home.team.id===id?g.teams.home.isWinner:g.teams.away.isWinner).length;
+return {winPct:wins/games.length};
+} catch { return {winPct:0.500}; }
+}
+
+async function fetchStandings(id,yr) {
+try {
+const d=await get(`/standings?leagueId=103,104&season=${yr}&hydrate=team`);
+for(const rec of d.records||[]) for(const tr of rec.teamRecords||[])
+if(tr.team.id===id) return {rdiff:(tr.runsScored||0)-(tr.runsAllowed||0),wins:tr.wins||0,losses:tr.losses||0,pct:parseFloat(tr.winningPercentage)||0.500};
+return {rdiff:0,pct:0.500};
+} catch { return {rdiff:0,pct:0.500}; }
+}
+
+async function fetchH2H(awayId,homeId,yr) {
+try {
+const d=await get(`/schedule?sportId=1&season=${yr}&teamId=${awayId}&opponentId=${homeId}`);
+const games=(d.dates||[]).flatMap(x=>x.games).filter(g=>g.status?.abstractGameState===“Final”);
+if(games.length<3) return null;
+const awayWins=games.filter(g=>(g.teams.away.team.id===awayId&&g.teams.away.isWinner)||(g.teams.home.team.id===awayId&&g.teams.home.isWinner)).length;
+return {awayWins,total:games.length,awayPct:awayWins/games.length};
+} catch { return null; }
+}
+
+// ── MODEL ─────────────────────────────────────────────────────────────────────
+const AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
+const AVG_HIT={ba:0.250,obp:0.320,slg:0.415,woba:0.315,babip:0.295};
+const AVG_PITCH={teamEra:4.20,teamWhip:1.28,teamK9:8.5,teamFip:4.05,saves:25,holds:45,blownSaves:10};
+const AVG_DEF={fieldingPct:0.983,errors:80};
+
+function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
+function fromLO(lo){return 1/(1+Math.exp(-lo))}
+
+function blendPitching(sp,tp) {
+const S=sp||AVG_SP, T=tp||AVG_PITCH;
+const spInn=clamp(S.ipsPerStart||5.0,3.5,7.0), bpInn=9-spInn;
+const bpEra=clamp((T.teamEra*9-S.era*spInn)/bpInn,2.5,7.5);
+const bpWhip=clamp((T.teamWhip*9-S.whip*spInn)/bpInn,0.9,2.2);
+const bpK9=clamp((T.teamK9*9-S.k9*spInn)/bpInn,5.0,14.0);
+const bpFip=clamp((T.teamFip*9-S.fip*spInn)/bpInn,2.5,7.5);
+const bsv=T.saves+T.blownSaves;
+return {
+spInn,bpInn,
+starterEra:S.era,starterWhip:S.whip,starterK9:S.k9,starterFip:S.fip,starterXfip:S.xfip,starterBb9:S.bb9,
+bullpenEra:bpEra,bullpenWhip:bpWhip,bullpenFip:bpFip,
+blendedEra:(S.era*spInn+bpEra*bpInn)/9,
+blendedWhip:(S.whip*spInn+bpWhip*bpInn)/9,
+blendedK9:(S.k9*spInn+bpK9*bpInn)/9,
+blendedFip:(S.fip*spInn+bpFip*bpInn)/9,
+bullpenDepth:(T.saves+T.holds)/70,
+svPct:bsv>0?T.saves/bsv:0.70,
+};
+}
+
+function runModel(A,B,h2h) {
+const pfB=(PARK_FACTORS[B.name]||100)/100;
+const pfA=(PARK_FACTORS[A.name]||100)/100;
+const aWoba=(A.hit.woba/pfA)*pfB;
+const bWoba=(B.hit.woba/pfA)*pfB;
+const aLuck=(A.hit.babip-0.295)*0.5;
+const bLuck=(B.hit.babip-0.295)*0.5;
+const aDefScore=(A.def.fieldingPct-0.983)*50-(A.def.errors-80)*0.003;
+const bDefScore=(B.def.fieldingPct-0.983)*50-(B.def.errors-80)*0.003;
+const aBpRel=(A.pitch.svPct-0.70)*0.3;
+const bBpRel=(B.pitch.svPct-0.70)*0.3;
+
+let lo=0;
+lo+=(B.pitch.blendedFip-A.pitch.blendedFip)*0.24;
+lo+=(B.pitch.blendedWhip-A.pitch.blendedWhip)*0.20;
+lo+=(A.pitch.blendedK9-B.pitch.blendedK9)*0.04;
+lo+=(A.pitch.starterBb9-B.pitch.starterBb9)*0.06;
+lo+=aBpRel-bBpRel;
+lo+=(A.pitch.bullpenDepth-B.pitch.bullpenDepth)*0.10;
+lo+=(aWoba-bWoba)*4.2;
+lo+=(A.hit.slg-B.hit.slg)*0.8;
+lo-=(aLuck-bLuck);
+lo+=(aDefScore-bDefScore)*0.08;
+lo-=0.16;
+lo+=(A.stand.rdiff-B.stand.rdiff)*0.005;
+lo+=(A.recent.winPct-B.recent.winPct)*0.50;
+lo+=(A.stand.pct-B.stand.pct)*0.30;
+if(h2h&&h2h.total>=3) lo+=(h2h.awayPct-0.500)*0.20;
+lo+=((PARK_FACTORS[B.name]||100)-100)*0.004;
+
+const pA=clamp(fromLO(lo),0.22,0.78);
+const pB=1-pA;
+const ml=p=>p>=0.5?”-”+Math.round(p/(1-p)*100):”+”+Math.round((1-p)/p*100);
+const rA=Math.max(1,Math.round(aWoba*14-B.pitch.blendedFip*0.30));
+const rB=Math.max(1,Math.round(bWoba*14-A.pitch.blendedFip*0.30));
+const winner=pA>=pB?A.name:B.name;
+const winnerP=pA>=pB?pA:pB;
+const winnerML=pA>=pB?ml(pA):ml(pB);
+
+const factors=[
+{label:“Blended FIP”,aVal:A.pitch.blendedFip.toFixed(2),bVal:B.pitch.blendedFip.toFixed(2),delta:(B.pitch.blendedFip-A.pitch.blendedFip)*0.24},
+{label:“Blended WHIP”,aVal:A.pitch.blendedWhip.toFixed(2),bVal:B.pitch.blendedWhip.toFixed(2),delta:(B.pitch.blendedWhip-A.pitch.blendedWhip)*0.20},
+{label:“BB/9”,aVal:A.pitch.starterBb9.toFixed(1),bVal:B.pitch.starterBb9.toFixed(1),delta:(A.pitch.starterBb9-B.pitch.starterBb9)*0.06},
+{label:“K/9”,aVal:A.pitch.blendedK9.toFixed(1),bVal:B.pitch.blendedK9.toFixed(1),delta:(A.pitch.blendedK9-B.pitch.blendedK9)*0.04},
+{label:“Bullpen Depth”,aVal:Math.round(A.pitch.bullpenDepth*70),bVal:Math.round(B.pitch.bullpenDepth*70),delta:(A.pitch.bullpenDepth-B.pitch.bullpenDepth)*0.10},
+{label:“Save %”,aVal:(A.pitch.svPct*100).toFixed(0)+”%”,bVal:(B.pitch.svPct*100).toFixed(0)+”%”,delta:aBpRel-bBpRel},
+{label:“wOBA (park-adj)”,aVal:aWoba.toFixed(3),bVal:bWoba.toFixed(3),delta:(aWoba-bWoba)*4.2},
+{label:“Team SLG”,aVal:A.hit.slg.toFixed(3),bVal:B.hit.slg.toFixed(3),delta:(A.hit.slg-B.hit.slg)*0.8},
+{label:“BABIP luck”,aVal:A.hit.babip.toFixed(3),bVal:B.hit.babip.toFixed(3),delta:-(aLuck-bLuck),detail:“High BABIP slightly discounted”},
+{label:“Defense”,aVal:A.def.fieldingPct.toFixed(3),bVal:B.def.fieldingPct.toFixed(3),delta:(aDefScore-bDefScore)*0.08},
+{label:“Park Factor”,aVal:(PARK_FACTORS[A.name]||100)+””,bVal:(PARK_FACTORS[B.name]||100)+” (home)”,delta:((PARK_FACTORS[B.name]||100)-100)*0.004},
+{label:“Home Field”,aVal:“Away”,bVal:“Home 🏠”,delta:-0.16},
+{label:“Season Win%”,aVal:(A.stand.pct*1000|0)/10+”%”,bVal:(B.stand.pct*1000|0)/10+”%”,delta:(A.stand.pct-B.stand.pct)*0.30},
+{label:“Recent Form L10”,aVal:Math.round(A.recent.winPct*10)+”-”+Math.round((1-A.recent.winPct)*10),bVal:Math.round(B.recent.winPct*10)+”-”+Math.round((1-B.recent.winPct)*10),delta:(A.recent.winPct-B.recent.winPct)*0.50},
+{label:“Run Diff”,aVal:(A.stand.rdiff>=0?”+”:””)+A.stand.rdiff,bVal:(B.stand.rdiff>=0?”+”:””)+B.stand.rdiff,delta:(A.stand.rdiff-B.stand.rdiff)*0.005},
+h2h&&h2h.total>=3?{label:“Head-to-Head”,aVal:h2h.awayWins+”-”+(h2h.total-h2h.awayWins)+” away”,bVal:(h2h.total-h2h.awayWins)+”-”+h2h.awayWins+” home”,delta:(h2h.awayPct-0.5)*0.20}:null,
+].filter(Boolean).sort((x,y)=>Math.abs(y.delta)-Math.abs(x.delta));
+
+return {
+pctA:Math.round(pA*100),pctB:Math.round(pB*100),
+mlA:ml(pA),mlB:ml(pB),
+ou:(rA+rB+0.5).toFixed(1),
+confidence:Math.abs(pA-0.5)>0.15?“High”:Math.abs(pA-0.5)>0.07?“Medium”:“Low”,
+winner,winnerP,winnerML,
+projScore:pA>=pB?`${Math.max(rA,rB)}–${Math.min(rA,rB)}`:`${Math.min(rA,rB)}–${Math.max(rA,rB)}`,
+factors,aName:A.name,bName:B.name,
+aPitcher:A.pitcherName,bPitcher:B.pitcherName,
+aBlend:A.pitch,bBlend:B.pitch,
+parkB:PARK_FACTORS[B.name]||100,h2h,
+};
+}
+
+async function analyzeGame(game,date) {
+const yr=date.slice(0,4);
+const [sA,sB,hA,hB,pA,pB,dA,dB,rA,rB,stA,stB,h2h]=await Promise.all([
+fetchStarter(game.away.pitcherId,yr), fetchStarter(game.home.pitcherId,yr),
+fetchHitting(game.away.id,yr),       fetchHitting(game.home.id,yr),
+fetchPitching(game.away.id,yr),      fetchPitching(game.home.id,yr),
+fetchDefense(game.away.id,yr),       fetchDefense(game.home.id,yr),
+fetchRecent(game.away.id,date),      fetchRecent(game.home.id,date),
+fetchStandings(game.away.id,yr),     fetchStandings(game.home.id,yr),
+fetchH2H(game.away.id,game.home.id,yr),
+]);
+const A={name:game.away.name,pitcherName:game.away.pitcherName,pitch:blendPitching(sA,pA),hit:hA||AVG_HIT,def:dA||AVG_DEF,recent:rA,stand:stA};
+const B={name:game.home.name,pitcherName:game.home.pitcherName,pitch:blendPitching(sB,pB),hit:hB||AVG_HIT,def:dB||AVG_DEF,recent:rB,stand:stB};
+return {…runModel(A,B,h2h),weather:game.weather,venue:game.venue,time:game.time,gamePk:game.gamePk};
+}
+
+// ── KELLY CRITERION ───────────────────────────────────────────────────────────
+function mlToDecimal(ml) {
+const n=parseInt(ml);
+return n>0 ? (n/100)+1 : (100/Math.abs(n))+1;
+}
+function kelly(p,ml,fraction=0.25) {
+// fractional Kelly (25% = conservative)
+const b=mlToDecimal(ml)-1; // net odds
+const q=1-p;
+const k=(b*p-q)/b;
+return Math.max(0,k*fraction); // never negative
+}
+function confScore(r) {
+// 0–1 edge score based on win probability distance from 50%
+return Math.abs(r.winnerP-0.5)*2;
+}
+// Convert moneyline to implied probability (with vig removed)
+function mlToImplied(ml) {
+if(!ml) return null;
+const n=parseInt(ml);
+if(isNaN(n)) return null;
+const raw=n>0 ? 100/(n+100) : Math.abs(n)/(Math.abs(n)+100);
+return raw; // raw includes vig — we use this as the “book’s view”
+}
+
+// Edge = model probability minus book implied probability
+// Positive = model thinks team is more likely to win than book implies
+function calcEdge(modelP, bookML) {
+const bookP=mlToImplied(bookML);
+if(bookP===null) return null;
+return modelP - bookP;
+}
+
+function buildParlays(results, bookOdds={}, minEdgePct=2) {
+const minEdge=minEdgePct/100;
+
+const withEdge=results
+.filter(r=>r.winnerP>=0.54)
+.map(r=>{
+const bookML=bookOdds[r.gamePk]||null;
+const edge=bookML ? calcEdge(r.winnerP, bookML) : null;
+const hasEdge=edge!==null ? edge>=minEdge : true; // if no book odds entered, include by default
+const effectiveML=bookML||r.winnerML; // use book odds for Kelly if available
+const kPct=kelly(r.winnerP, effectiveML)*100;
+return {…r, bookML, edge, hasEdge, effectiveML, kellyPct:kPct};
+})
+.filter(r=>r.hasEdge)
+.sort((a,b)=>{
+// Sort by edge if available, else by model confidence
+const ea=a.edge!==null?a.edge:confScore(a)*0.1;
+const eb=b.edge!==null?b.edge:confScore(b)*0.1;
+return eb-ea;
+});
+
+// No-odds fallback: if user hasn’t entered any book odds, use model confidence sort
+const allHaveOdds=results.filter(r=>r.winnerP>=0.54).every(r=>bookOdds[r.gamePk]);
+
+const singles=withEdge.slice(0,3).map(r=>({
+legs:[r], type:“Single”,
+combinedP:r.winnerP,
+payout:mlToDecimal(r.effectiveML),
+kellyPct:r.kellyPct,
+label:r.winner,
+hasEdgeData:r.edge!==null,
+}));
+
+const top4=withEdge.slice(0,4);
+const parlays2=[];
+for(let i=0;i<top4.length;i++) for(let j=i+1;j<top4.length;j++) {
+const a=top4[i],b=top4[j];
+if(a.gamePk===b.gamePk) continue;
+const combinedP=a.winnerP*b.winnerP;
+const payout=mlToDecimal(a.effectiveML)*mlToDecimal(b.effectiveML);
+const impliedML=”+”+Math.round((payout-1)*100);
+const kPct=kelly(combinedP,impliedML)*100;
+// Combined edge: both legs must have positive edge if odds entered
+const combinedEdge=(a.edge!==null&&b.edge!==null)?((a.edge+b.edge)/2):null;
+parlays2.push({legs:[a,b],type:“2-Leg Parlay”,combinedP,payout,kellyPct:kPct,
+combinedEdge, label:a.winner+” + “+b.winner});
+}
+parlays2.sort((a,b)=>{
+const ea=a.combinedEdge!==null?a.combinedEdge:a.combinedP;
+const eb=b.combinedEdge!==null?b.combinedEdge:b.combinedP;
+return eb-ea;
+});
+
+const parlays3=[];
+const top3=withEdge.slice(0,3);
+if(top3.length===3){
+const [a,b,c]=top3;
+if(a.gamePk!==b.gamePk&&b.gamePk!==c.gamePk&&a.gamePk!==c.gamePk){
+const combinedP=a.winnerP*b.winnerP*c.winnerP;
+const payout=mlToDecimal(a.effectiveML)*mlToDecimal(b.effectiveML)*mlToDecimal(c.effectiveML);
+const kPct=kelly(combinedP,”+”+Math.round((payout-1)*100))*100;
+const combinedEdge=(a.edge!==null&&b.edge!==null&&c.edge!==null)?((a.edge+b.edge+c.edge)/3):null;
+parlays3.push({legs:[a,b,c],type:“3-Leg Parlay”,combinedP,payout,kellyPct:kPct,
+combinedEdge,label:a.winner+” + “+b.winner+” + “+c.winner});
+}
+}
+
+return {singles,parlays2:parlays2.slice(0,2),parlays3,allHaveOdds,edgeFiltered:withEdge.length};
+}
+
+// ── COLORS ────────────────────────────────────────────────────────────────────
+const C={bg:”#0c0b09”,card:”#111009”,border:”#252015”,gold:”#c8922a”,goldLight:”#e0b040”,
+blue:”#3a6a9a”,green:”#3a8a5a”,red:”#8a3a3a”,text:”#c8b890”,muted:”#6a5a3a”,dim:”#2e2416”};
+
+// ── UI ────────────────────────────────────────────────────────────────────────
+function Spinner(){return <div style={{display:“inline-block”,width:14,height:14,border:“2px solid “+C.dim,borderTopColor:C.gold,borderRadius:“50%”,animation:“spin 0.8s linear infinite”}}/>}
+function Card({children,style={}}){return <div style={{background:C.card,border:“1px solid “+C.border,borderRadius:10,padding:“16px 18px”,…style}}>{children}</div>}
+function Lbl({c,children}){return <div style={{fontSize:9,letterSpacing:3,color:c||C.muted,textTransform:“uppercase”,marginBottom:8}}>{children}</div>}
+function Badge({label,val,gold,green}){
+const col=gold?C.goldLight:green?”#5aba8a”:C.text;
+const bg=gold?“rgba(200,146,42,0.08)”:green?“rgba(58,138,90,0.08)”:“rgba(255,255,255,0.02)”;
+const bord=gold?C.gold:green?C.green:C.border;
+return(
+<div style={{border:“1px solid “+bord,background:bg,borderRadius:6,padding:“8px 10px”,textAlign:“center”,flex:“1 1 70px”}}>
+<div style={{fontSize:9,color:C.muted,letterSpacing:2,textTransform:“uppercase”,marginBottom:2}}>{label}</div>
+<div style={{fontSize:16,fontWeight:900,color:col,fontFamily:“monospace”}}>{val}</div>
+</div>
+);
+}
+function WinBar({pA,pB,nameA,nameB}){
+return(
+<div>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:6}}>
+<span style={{fontSize:12,fontWeight:700,color:C.text}}>{nameA}</span>
+<span style={{fontSize:12,fontWeight:700,color:C.text}}>{nameB}</span>
+</div>
+<div style={{display:“flex”,height:30,borderRadius:4,overflow:“hidden”,border:“1px solid “+C.border}}>
+<div style={{width:pA+”%”,background:“linear-gradient(90deg,#b07820,#d4a030)”,display:“flex”,alignItems:“center”,justifyContent:“center”,fontSize:13,fontWeight:900,color:”#1a1000”,fontFamily:“monospace”}}>{pA}%</div>
+<div style={{width:pB+”%”,background:“linear-gradient(90deg,#2a5070,#3a6a9a)”,display:“flex”,alignItems:“center”,justifyContent:“center”,fontSize:13,fontWeight:900,color:”#c0d8f0”,fontFamily:“monospace”}}>{pB}%</div>
+</div>
+</div>
+);
+}
+function FactorRow({f}){
+const favA=f.delta>0.005,favB=f.delta<-0.005;
+const pct=Math.round(Math.min(Math.abs(f.delta)/0.40,1)*100);
+const col=favA?C.gold:favB?C.blue:”#444”;
+return(
+<div style={{padding:“7px 0”,borderBottom:“1px solid “+C.dim}}>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:3,flexWrap:“wrap”,gap:3}}>
+<span style={{fontSize:11,color:C.muted}}>{f.label}</span>
+<div style={{display:“flex”,gap:5}}>
+<span style={{fontSize:11,fontFamily:“monospace”,color:favA?C.goldLight:”#555”}}>{f.aVal}</span>
+<span style={{fontSize:11,color:C.dim}}>vs</span>
+<span style={{fontSize:11,fontFamily:“monospace”,color:favB?”#7aabdf”:”#555”}}>{f.bVal}</span>
+</div>
+</div>
+{f.detail&&<div style={{fontSize:9,color:”#3a3020”,marginBottom:3}}>{f.detail}</div>}
+<div style={{height:3,background:C.dim,borderRadius:2}}>
+<div style={{height:“100%”,width:pct+”%”,background:col,borderRadius:2,marginLeft:favB?“auto”:0}}/>
+</div>
+</div>
+);
+}
+
+// ── PARLAY CARD ───────────────────────────────────────────────────────────────
+function ParlayCard({play,bankroll,onViewGame}){
+const isParlay=play.legs.length>1;
+const typeColor=play.legs.length===1?C.gold:play.legs.length===2?”#5a9ac0”:”#9a5ac0”;
+const stake=((play.kellyPct/100)*bankroll).toFixed(2);
+const winAmt=((play.payout-1)*parseFloat(stake)).toFixed(2);
+const confLabel=play.combinedP>=0.65?“High”:play.combinedP>=0.57?“Medium”:“Low”;
+const confColor=play.combinedP>=0.65?C.gold:play.combinedP>=0.57?”#8a8a3a”:C.muted;
+
+return(
+<div style={{border:“1px solid “+typeColor,background:“rgba(255,255,255,0.02)”,borderRadius:10,padding:“14px 16px”,marginBottom:10}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:10,flexWrap:“wrap”,gap:6}}>
+<span style={{fontSize:11,fontWeight:700,color:typeColor,letterSpacing:2,textTransform:“uppercase”}}>{play.type}</span>
+<div style={{display:“flex”,gap:8,alignItems:“center”,flexWrap:“wrap”}}>
+{play.combinedEdge!==null&&play.combinedEdge!==undefined&&(
+<span style={{fontSize:11,fontWeight:900,fontFamily:“monospace”,
+color:play.combinedEdge>=0.05?”#5aba8a”:play.combinedEdge>=0.02?”#8aba5a”:”#c0c060”,
+background:play.combinedEdge>=0.05?“rgba(90,186,138,0.1)”:“rgba(200,200,90,0.08)”,
+border:“1px solid “+(play.combinedEdge>=0.05?”#2a5a3a”:”#4a4a1a”),
+borderRadius:4,padding:“2px 6px”,
+}}>+{(play.combinedEdge*100).toFixed(1)}% EDGE</span>
+)}
+{play.legs[0]&&play.legs[0].edge!==null&&play.legs.length===1&&(
+<span style={{fontSize:11,fontWeight:900,fontFamily:“monospace”,
+color:play.legs[0].edge>=0.05?”#5aba8a”:play.legs[0].edge>=0.02?”#8aba5a”:”#c0c060”,
+background:play.legs[0].edge>=0.05?“rgba(90,186,138,0.1)”:“rgba(200,200,90,0.08)”,
+border:“1px solid “+(play.legs[0].edge>=0.05?”#2a5a3a”:”#4a4a1a”),
+borderRadius:4,padding:“2px 6px”,
+}}>+{(play.legs[0].edge*100).toFixed(1)}% EDGE</span>
+)}
+<span style={{fontSize:11,color:confColor,fontWeight:700}}>{confLabel}</span>
+<span style={{fontSize:11,color:C.muted,fontFamily:“monospace”}}>{(play.combinedP*100).toFixed(1)}% model</span>
+</div>
+</div>
+
+```
+  {/* Legs */}
+  {play.legs.map((leg,i)=>(
+    <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",background:"rgba(255,255,255,0.02)",borderRadius:6,marginBottom:6,border:"1px solid "+C.dim,cursor:"pointer"}}
+      onClick={()=>onViewGame(leg)}>
+      <div>
+        <div style={{fontSize:13,fontWeight:700,color:C.goldLight}}>{leg.winner}</div>
+        <div style={{fontSize:10,color:C.muted}}>
+          {leg.winner===leg.aName?leg.aName+" (away)":leg.bName+" (home)"} · {leg.time}
+        </div>
+        <div style={{fontSize:10,color:"#4a4a2a"}}>
+          vs {leg.winner===leg.aName?leg.bName:leg.aName} · SP: {leg.winner===leg.aName?leg.aPitcher:leg.bPitcher}
+        </div>
+      </div>
+      <div style={{textAlign:"right"}}>
+        <div style={{fontSize:14,fontWeight:900,fontFamily:"monospace",color:leg.winnerML.startsWith("+")?C.green:C.text}}>{leg.winnerML}</div>
+        <div style={{fontSize:10,color:C.muted}}>{(leg.winnerP*100).toFixed(1)}%</div>
+        <div style={{fontSize:9,color:C.dim}}>tap for details →</div>
+      </div>
+    </div>
+  ))}
+
+  {/* Kelly stake */}
+  <div style={{marginTop:10,padding:"10px 12px",background:"rgba(200,146,42,0.05)",border:"1px solid "+C.dim,borderRadius:8}}>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,textAlign:"center"}}>
+      {[
+        ["Kelly %",(play.kellyPct).toFixed(1)+"%",false],
+        ["Stake","$"+stake,false],
+        ["Payout",play.payout.toFixed(2)+"x",false],
+        ["Net Win","$"+winAmt,true],
+      ].map(([l,v,g])=>(
+        <div key={l}>
+          <div style={{fontSize:9,color:C.dim,letterSpacing:1,textTransform:"uppercase",marginBottom:2}}>{l}</div>
+          <div style={{fontSize:13,fontWeight:900,fontFamily:"monospace",color:g?"#5aba8a":C.text}}>{v}</div>
+        </div>
+      ))}
+    </div>
+    {isParlay&&(
+      <div style={{marginTop:8,fontSize:10,color:C.dim,textAlign:"center",lineHeight:1.5}}>
+        ⚠️ Parlay win prob = {play.legs.map(l=>(l.winnerP*100).toFixed(0)+"%").join(" × ")} = {(play.combinedP*100).toFixed(1)}%
+        {play.legs.length===3?" · High variance, size conservatively":""}
+      </div>
+    )}
+  </div>
+</div>
+```
+
+);
+}
+
+// ── TEAM STATS CACHE ─────────────────────────────────────────────────────────
+const _cache = {};
+async function cachedTeamStats(id, yr) {
+const k = id+”-”+yr;
+if (_cache[k]) return _cache[k];
+const [hit,pit,def,stand] = await Promise.all([
+fetchHitting(id,yr), fetchPitching(id,yr), fetchDefense(id,yr), fetchStandings(id,yr)
+]);
+_cache[k] = {hit:hit||AVG_HIT, pit, def:def||AVG_DEF, stand};
+return _cache[k];
+}
+
+async function fetchCompletedRange(startDate, endDate) {
+const d = await get(`/schedule?sportId=1&startDate=${startDate}&endDate=${endDate}&hydrate=probablePitcher,team,decisions`);
+const all = (d.dates||[]).flatMap(x => x.games);
+return all.filter(g => g.status?.abstractGameState === “Final”).map(g => ({
+gamePk: g.gamePk,
+date: (g.officialDate||g.gameDate||””).slice(0,10),
+away: { id:g.teams.away.team.id, name:g.teams.away.team.name, pitcherId:g.teams.away.probablePitcher?.id||null, pitcherName:g.teams.away.probablePitcher?.fullName||“TBD” },
+home: { id:g.teams.home.team.id, name:g.teams.home.team.name, pitcherId:g.teams.home.probablePitcher?.id||null, pitcherName:g.teams.home.probablePitcher?.fullName||“TBD” },
+actualWinner: g.teams.home.isWinner ? g.teams.home.team.name : g.teams.away.isWinner ? g.teams.away.team.name : null,
+})).filter(g => g.actualWinner);
+}
+
+async function analyzeGameCached(game, yr) {
+const [sA,sB,csA,csB,rA,rB,h2h] = await Promise.all([
+fetchStarter(game.away.pitcherId,yr), fetchStarter(game.home.pitcherId,yr),
+cachedTeamStats(game.away.id,yr), cachedTeamStats(game.home.id,yr),
+fetchRecent(game.away.id,game.date), fetchRecent(game.home.id,game.date),
+fetchH2H(game.away.id,game.home.id,yr),
+]);
+const A={name:game.away.name,pitcherName:game.away.pitcherName,pitch:blendPitching(sA,csA.pit),hit:csA.hit,def:csA.def,recent:rA,stand:csA.stand};
+const B={name:game.home.name,pitcherName:game.home.pitcherName,pitch:blendPitching(sB,csB.pit),hit:csB.hit,def:csB.def,recent:rB,stand:csB.stand};
+const r=runModel(A,B,h2h);
+return {…r, date:game.date, actualWinner:game.actualWinner, correct:r.winner===game.actualWinner};
+}
+
+function computeBacktestStats(results, bankroll) {
+function record(arr) {
+if(!arr.length) return {w:0,l:0,pct:null};
+const w=arr.filter(r=>r.correct).length;
+return {w,l:arr.length-w,pct:(w/arr.length*100).toFixed(1)};
+}
+
+// ── Individual game Kelly P&L ──
+let bankSim=bankroll, peakBank=bankroll, maxDD=0;
+const equity=[bankroll];
+results.forEach(r=>{
+const k=kelly(r.winnerP,r.winnerML)*bankSim;
+const gain=r.correct?k*(mlToDecimal(r.winnerML)-1):-k;
+bankSim=Math.max(1,bankSim+gain);
+peakBank=Math.max(peakBank,bankSim);
+maxDD=Math.max(maxDD,(peakBank-bankSim)/peakBank*100);
+equity.push(parseFloat(bankSim.toFixed(2)));
+});
+
+// ── Calibration buckets ──
+const buckets=[
+{label:“54-58%”,lo:0.54,hi:0.58},{label:“58-62%”,lo:0.58,hi:0.62},
+{label:“62-66%”,lo:0.62,hi:0.66},{label:“66-70%”,lo:0.66,hi:0.70},
+{label:“70%+”,lo:0.70,hi:1.00},
+].map(b=>{
+const gs=results.filter(r=>r.winnerP>=b.lo&&r.winnerP<b.hi);
+const wins=gs.filter(r=>r.correct).length;
+return {…b,games:gs.length,wins,actualPct:gs.length?(wins/gs.length*100).toFixed(1):null};
+});
+
+// ── Day-by-day parlay simulation ──
+// Group results by date, build parlays for each day, track outcomes
+const byDate={};
+results.forEach(r=>{ if(!byDate[r.date]) byDate[r.date]=[]; byDate[r.date].push(r); });
+
+const parlayDays=[];
+let p1Bank=bankroll, p2Bank=bankroll, p3Bank=bankroll;
+const p1Eq=[bankroll], p2Eq=[bankroll], p3Eq=[bankroll];
+
+Object.keys(byDate).sort().forEach(date=>{
+const dayResults=byDate[date];
+const plays=buildParlays(dayResults); // reuse existing parlay builder
+
+```
+// Best single
+const s=plays.singles[0];
+if(s){
+  const k=kelly(s.combinedP,s.legs[0].winnerML)*p1Bank;
+  const hit=s.legs[0].correct;
+  const gain=hit?k*(mlToDecimal(s.legs[0].winnerML)-1):-k;
+  p1Bank=Math.max(1,p1Bank+gain);
+  p1Eq.push(parseFloat(p1Bank.toFixed(2)));
+}
+
+// Best 2-leg parlay
+const p2=plays.parlays2[0];
+if(p2){
+  const odds=p2.legs.map(l=>mlToDecimal(l.winnerML)).reduce((a,b)=>a*b,1);
+  const impliedML="+"+(Math.round((odds-1)*100));
+  const k=kelly(p2.combinedP,impliedML)*p2Bank;
+  const hit=p2.legs.every(l=>l.correct);
+  const gain=hit?k*(odds-1):-k;
+  p2Bank=Math.max(1,p2Bank+gain);
+  p2Eq.push(parseFloat(p2Bank.toFixed(2)));
+}
+
+// Best 3-leg parlay
+const p3=plays.parlays3[0];
+if(p3){
+  const odds=p3.legs.map(l=>mlToDecimal(l.winnerML)).reduce((a,b)=>a*b,1);
+  const impliedML="+"+(Math.round((odds-1)*100));
+  const k=kelly(p3.combinedP,impliedML)*p3Bank;
+  const hit=p3.legs.every(l=>l.correct);
+  const gain=hit?k*(odds-1):-k;
+  p3Bank=Math.max(1,p3Bank+gain);
+  p3Eq.push(parseFloat(p3Bank.toFixed(2)));
+}
+
+parlayDays.push({
+  date,
+  single:  s  ? {...s,  hit:s.legs[0].correct,                      label:s.legs[0].winner} : null,
+  parlay2: p2 ? {...p2, hit:p2.legs.every(l=>l.correct),             label:p2.legs.map(l=>l.winner).join(" + ")} : null,
+  parlay3: p3 ? {...p3, hit:p3.legs.every(l=>l.correct),             label:p3.legs.map(l=>l.winner).join(" + ")} : null,
+});
+```
+
+});
+
+// Record for each play type
+function parlayRecord(days, key) {
+const played=days.filter(d=>d[key]);
+const won=played.filter(d=>d[key].hit);
+return {w:won.length, l:played.length-won.length, pct:played.length?(won.length/played.length*100).toFixed(1):null, played:played.length};
+}
+
+return {
+all:record(results), high:record(results.filter(r=>r.confidence===“High”)),
+medium:record(results.filter(r=>r.confidence===“Medium”)), low:record(results.filter(r=>r.confidence===“Low”)),
+roi:((bankSim-bankroll)/bankroll*100).toFixed(1),
+finalBank:bankSim.toFixed(0), maxDD:maxDD.toFixed(1),
+equity, calibration:buckets, bets:results,
+// Parlay tracking
+parlayDays,
+p1Record:parlayRecord(parlayDays,“single”),
+p2Record:parlayRecord(parlayDays,“parlay2”),
+p3Record:parlayRecord(parlayDays,“parlay3”),
+p1Bank:p1Bank.toFixed(0), p2Bank:p2Bank.toFixed(0), p3Bank:p3Bank.toFixed(0),
+p1Eq, p2Eq, p3Eq,
+p1Roi:((p1Bank-bankroll)/bankroll*100).toFixed(1),
+p2Roi:((p2Bank-bankroll)/bankroll*100).toFixed(1),
+p3Roi:((p3Bank-bankroll)/bankroll*100).toFixed(1),
+};
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+const TABS=[“📋 Daily Board”,“🔍 Game Detail”,“🎯 Best Plays”,“📊 Season Record”];
+
+function App(){
+const today=new Date().toISOString().slice(0,10);
+const [tab,setTab]=useState(0);
+const [date,setDate]=useState(today);
+const [bankroll,setBankroll]=useState(1000);
+const [games,setGames]=useState([]);
+const [results,setResults]=useState([]);
+const [detail,setDetail]=useState(null);
+const [parlays,setParlays]=useState(null);
+const [loading,setLoading]=useState(false);
+const [progress,setProgress]=useState(””);
+const [error,setError]=useState(””);
+const [bookOdds,setBookOdds]=useState({}); // gamePk -> book moneyline string
+const [minEdgePct,setMinEdgePct]=useState(2); // minimum edge % to include
+// Backtest state
+const [btStart,setBtStart]=useState(()=>{ const d=new Date(); d.setDate(d.getDate()-30); return d.toISOString().slice(0,10); });
+const [btEnd,setBtEnd]=useState(()=>{ const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); });
+const [btResults,setBtResults]=useState(null);
+const [btLoading,setBtLoading]=useState(false);
+const [btProgress,setBtProgress]=useState(””);
+const [btError,setBtError]=useState(””);
+
+const loadAll=async()=>{
+setLoading(true);setError(””);setResults([]);setParlays(null);setDetail(null);
+setProgress(“Loading schedule…”);
+try{
+const gameList=await fetchGames(date);
+if(!gameList.length){setError(“No games found for “+date);setLoading(false);return;}
+setGames(gameList);
+setProgress(`Analyzing ${gameList.length} games…`);
+// Analyze all games in parallel (batched to avoid rate limiting)
+const analyzed=[];
+for(let i=0;i<gameList.length;i+=3){
+const batch=gameList.slice(i,i+3);
+setProgress(`Analyzing game ${Math.min(i+3,gameList.length)} of ${gameList.length}…`);
+const batch_results=await Promise.allSettled(batch.map(g=>analyzeGame(g,date)));
+batch_results.forEach((r,j)=>{
+if(r.status===“fulfilled”) analyzed.push(r.value);
+else console.warn(“Game failed:”,batch[j].away.name,“vs”,batch[j].home.name,r.reason);
+});
+}
+setResults(analyzed);
+setParlays(buildParlays(analyzed,bookOdds,minEdgePct));
+setProgress(””);
+}catch(e){setError(“Error: “+e.message);}
+setLoading(false);
+};
+
+const viewGame=useCallback((r)=>{setDetail(r);setTab(1);},[]);
+
+const runBacktest=async()=>{
+setBtLoading(true);setBtError(””);setBtResults(null);setBtProgress(“Fetching completed games…”);
+try{
+const yr=btEnd.slice(0,4);
+const games=await fetchCompletedRange(btStart,btEnd);
+if(!games.length){setBtError(“No completed games found in that range.”);setBtLoading(false);return;}
+setBtProgress(`Analyzing ${games.length} games (using cached team stats)…`);
+const analyzed=[];
+for(let i=0;i<games.length;i+=4){
+const batch=games.slice(i,i+4);
+setBtProgress(`Analyzed ${Math.min(i+4,games.length)} / ${games.length} games…`);
+const res=await Promise.allSettled(batch.map(g=>analyzeGameCached(g,yr)));
+res.forEach(r=>{ if(r.status===“fulfilled”) analyzed.push(r.value); });
+}
+setBtResults(computeBacktestStats(analyzed,bankroll));
+}catch(e){setBtError(“Backtest error: “+e.message);}
+setBtLoading(false);setBtProgress(””);
+};
+
+// confidence color
+const confCol=c=>c===“High”?C.gold:c===“Medium”?”#8a8a3a”:C.muted;
+
+return(
+<div style={{minHeight:“100vh”,background:C.bg,paddingBottom:80}}>
+{/* Header */}
+<div style={{background:”#080705”,borderBottom:“1px solid “+C.border,padding:“14px 18px”}}>
+<div style={{fontSize:20,fontFamily:“Georgia,serif”,fontWeight:900,color:C.gold}}>⚾ Diamond Market</div>
+<div style={{fontSize:9,color:C.muted,letterSpacing:3,marginTop:1}}>LIVE MLB · FIP + wOBA + KELLY BANKROLL</div>
+</div>
+
+```
+  {/* Tabs */}
+  <div style={{display:"flex",borderBottom:"1px solid "+C.border,background:"#090806"}}>
+    {TABS.map((t,i)=>(
+      <button key={i} onClick={()=>setTab(i)} style={{
+        flex:1,padding:"11px 4px",border:"none",background:"transparent",
+        color:tab===i?C.gold:C.muted,fontSize:11,fontWeight:tab===i?700:400,
+        borderBottom:tab===i?"2px solid "+C.gold:"2px solid transparent",
+        cursor:"pointer",transition:"color 0.15s",
+      }}>{t}</button>
+    ))}
+  </div>
+
+  <div style={{maxWidth:820,margin:"0 auto",padding:"14px 12px"}}>
+
+    {/* ── TAB 0: DAILY BOARD ── */}
+    {tab===0&&(
+      <div className="fadein">
+        {/* Controls */}
+        <Card style={{marginBottom:14}}>
+          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+            <input type="date" value={date} onChange={e=>{setDate(e.target.value);setResults([]);setParlays(null);}}
+              style={{flex:"1 1 140px",background:"#0a0907",border:"1px solid "+C.border,borderRadius:6,color:C.text,fontSize:14,padding:"9px 12px",outline:"none",fontFamily:"monospace"}}/>
+            <div style={{display:"flex",alignItems:"center",gap:6,flex:"1 1 140px"}}>
+              <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Bankroll $</span>
+              <input type="number" value={bankroll} onChange={e=>setBankroll(parseFloat(e.target.value)||1000)} min="100"
+                style={{flex:1,background:"#0a0907",border:"1px solid "+C.border,borderRadius:6,color:C.text,fontSize:14,padding:"9px 10px",outline:"none",fontFamily:"monospace"}}/>
+            </div>
+            <button onClick={loadAll} disabled={loading} style={{
+              padding:"9px 18px",borderRadius:6,border:"none",
+              background:loading?C.dim:"linear-gradient(135deg,#c8922a,#9a6e18)",
+              color:loading?C.muted:"#080600",fontWeight:900,fontSize:12,
+              letterSpacing:2,textTransform:"uppercase",cursor:loading?"not-allowed":"pointer",
+              display:"flex",alignItems:"center",gap:8,whiteSpace:"nowrap",
+            }}>
+              {loading&&<Spinner/>}{loading?"Analyzing…":"Analyze All Games"}
+            </button>
+          </div>
+          {loading&&<div style={{marginTop:10,fontSize:11,color:C.muted,display:"flex",alignItems:"center",gap:8}}><Spinner/>{progress}</div>}
+        </Card>
+
+        {error&&<div style={{marginBottom:14,background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:6,padding:12,color:"#c06060",fontSize:12,fontFamily:"monospace"}}>{error}</div>}
+
+        {/* Results table */}
+        {results.length>0&&(
+          <Card style={{marginBottom:14}}>
+            <Lbl>{results.length} Games Analyzed — {date}</Lbl>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {results.sort((a,b)=>b.winnerP-a.winnerP).map((r,i)=>(
+                <button key={i} onClick={()=>viewGame(r)}
+                  style={{background:"rgba(255,255,255,0.02)",border:"1px solid "+C.border,borderRadius:8,padding:"10px 12px",cursor:"pointer",textAlign:"left",transition:"border-color 0.15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=C.gold}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <div style={{flex:1}}>
+                      <span style={{fontSize:13,fontWeight:700,color:C.goldLight}}>{r.winner}</span>
+                      <span style={{fontSize:11,color:C.muted,margin:"0 6px"}}>def.</span>
+                      <span style={{fontSize:13,color:"#555"}}>{r.winner===r.aName?r.bName:r.aName}</span>
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <span style={{fontSize:12,fontFamily:"monospace",color:r.winnerML.startsWith("+")?C.green:C.text,fontWeight:700}}>{r.winnerML}</span>
+                      <span style={{fontSize:11,fontFamily:"monospace",color:C.text}}>{(r.winnerP*100).toFixed(0)}%</span>
+                      <span style={{fontSize:10,fontWeight:700,color:confCol(r.confidence)}}>{r.confidence}</span>
+                    </div>
+                  </div>
+                  <div style={{marginTop:6,display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,color:C.muted,flexShrink:0}}>{r.time}</span>
+                    <span style={{fontSize:10,color:"#3a4a2a",flexShrink:0}}>O/U {r.ou}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto"}} onClick={e=>e.stopPropagation()}>
+                      <span style={{fontSize:9,color:C.dim,whiteSpace:"nowrap"}}>Book ML:</span>
+                      <input
+                        placeholder="+110"
+                        value={bookOdds[r.gamePk]||""}
+                        onChange={e=>{
+                          const v=e.target.value;
+                          setBookOdds(prev=>({...prev,[r.gamePk]:v}));
+                        }}
+                        style={{width:58,background:"#0a0907",border:"1px solid "+(bookOdds[r.gamePk]?"#3a5a3a":C.dim),
+                          borderRadius:4,color:bookOdds[r.gamePk]?"#5aba8a":C.muted,fontSize:11,
+                          padding:"3px 6px",outline:"none",fontFamily:"monospace",textAlign:"center"}}
+                      />
+                      {bookOdds[r.gamePk]&&calcEdge(r.winnerP,bookOdds[r.gamePk])!==null&&(()=>{
+                        const e=calcEdge(r.winnerP,bookOdds[r.gamePk]);
+                        const col=e>=0.05?"#5aba8a":e>=0.02?"#8aba5a":e>=0?"#c0c060":"#c06060";
+                        return <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:"monospace",whiteSpace:"nowrap"}}>{e>=0?"+":""}{(e*100).toFixed(1)}%</span>;
+                      })()}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </Card>
+        )}
+      </div>
+    )}
+
+    {/* ── TAB 1: GAME DETAIL ── */}
+    {tab===1&&(
+      <div className="fadein">
+        {!detail?(
+          <Card style={{textAlign:"center",padding:32}}>
+            <div style={{fontSize:32,marginBottom:10}}>🔍</div>
+            <div style={{color:C.muted}}>Select a game from the Daily Board to see full analysis.</div>
+          </Card>
+        ):(()=>{const r=detail;return(
+          <>
+            {(r.venue||r.weather)&&(
+              <div style={{marginBottom:12,padding:"8px 14px",background:"rgba(255,255,255,0.02)",border:"1px solid "+C.border,borderRadius:8,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
+                {r.venue&&<span style={{fontSize:11,color:C.muted}}>🏟 {r.venue}</span>}
+                {r.weather&&<span style={{fontSize:11,color:"#3a4a2a"}}>🌡 {r.weather}</span>}
+                <span style={{fontSize:11,color:"#2a3a2a"}}>Park {r.parkB} {r.parkB>102?"(hitter-friendly)":r.parkB<98?"(pitcher-friendly)":"(neutral)"}</span>
+              </div>
+            )}
+            <Card style={{marginBottom:12}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10,alignItems:"center",marginBottom:16}}>
+                <div>
+                  <div style={{fontSize:17,fontFamily:"Georgia,serif",fontWeight:900,color:r.winner===r.aName?C.goldLight:"#555"}}>{r.aName}</div>
+                  <div style={{fontSize:9,color:r.winner===r.aName?C.gold:"#333",textTransform:"uppercase",marginTop:2,letterSpacing:2}}>{r.winner===r.aName?"▲ WINNER":""}</div>
+                  <div style={{fontSize:10,color:"#4a3a1a",marginTop:3}}>SP: {r.aPitcher}</div>
+                </div>
+                <div style={{textAlign:"center"}}>
+                  <div style={{fontSize:9,color:C.dim,letterSpacing:4}}>VS</div>
+                  <div style={{fontSize:12,color:"#555",fontFamily:"monospace",marginTop:3}}>{r.projScore}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:17,fontFamily:"Georgia,serif",fontWeight:900,color:r.winner===r.bName?C.goldLight:"#555"}}>{r.bName}</div>
+                  <div style={{fontSize:9,color:r.winner===r.bName?C.gold:"#333",textTransform:"uppercase",marginTop:2,letterSpacing:2}}>{r.winner===r.bName?"▲ WINNER":""}</div>
+                  <div style={{fontSize:10,color:"#3a3a4a",marginTop:3}}>SP: {r.bPitcher}</div>
+                </div>
+              </div>
+              <WinBar pA={r.pctA} pB={r.pctB} nameA={r.aName} nameB={r.bName}/>
+            </Card>
+
+            {/* Pitching */}
+            <Card style={{marginBottom:12}}>
+              <Lbl>Full-Game Pitching</Lbl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {[[r.aName,r.aBlend,r.aPitcher],[r.bName,r.bBlend,r.bPitcher]].map(([name,p,pitcher])=>(
+                  <div key={name} style={{background:"rgba(255,255,255,0.02)",borderRadius:6,padding:"9px 11px",border:"1px solid "+C.dim}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:3}}>{name.split(" ").pop()}</div>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:5}}>SP: {pitcher}</div>
+                    <div style={{fontSize:10,color:"#5a4a2a",fontFamily:"monospace"}}>ERA {p.starterEra.toFixed(2)} · FIP {p.starterFip.toFixed(2)} · xFIP {p.starterXfip.toFixed(2)}</div>
+                    <div style={{fontSize:10,color:"#4a4a2a",fontFamily:"monospace",marginTop:1}}>WHIP {p.starterWhip.toFixed(2)} · K/9 {p.starterK9.toFixed(1)} · BB/9 {p.starterBb9.toFixed(1)}</div>
+                    <div style={{fontSize:10,color:"#3a4a5a",fontFamily:"monospace",marginTop:1}}>Avg {p.spInn.toFixed(1)} IP/start · BP SV% {(p.svPct*100).toFixed(0)}%</div>
+                    <div style={{marginTop:5,padding:"3px 7px",background:"rgba(200,146,42,0.06)",borderRadius:4}}>
+                      <span style={{fontSize:9,color:C.muted}}>Blended: </span>
+                      <span style={{fontSize:10,fontFamily:"monospace",color:C.gold,fontWeight:700}}>FIP {p.blendedFip.toFixed(2)} · WHIP {p.blendedWhip.toFixed(2)} · K/9 {p.blendedK9.toFixed(1)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+              <Badge label={r.aName.split(" ").pop()+" ML"} val={r.mlA} gold={r.winner===r.aName}/>
+              <Badge label={r.bName.split(" ").pop()+" ML"} val={r.mlB} gold={r.winner===r.bName}/>
+              <Badge label="O/U" val={r.ou}/>
+              <Badge label="Confidence" val={r.confidence} gold={r.confidence==="High"}/>
+            </div>
+
+            {r.h2h&&r.h2h.total>=3&&(
+              <div style={{marginBottom:12,padding:"8px 12px",background:"rgba(200,146,42,0.05)",border:"1px solid "+C.dim,borderRadius:8}}>
+                <span style={{fontSize:9,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>H2H {date.slice(0,4)}: </span>
+                <span style={{fontSize:12,fontFamily:"monospace",color:C.text}}>{r.aName.split(" ").pop()} {r.h2h.awayWins}–{r.h2h.total-r.h2h.awayWins} {r.bName.split(" ").pop()}</span>
+              </div>
+            )}
+
+            <Card style={{marginBottom:12}}>
+              <Lbl>Factor Breakdown</Lbl>
+              {r.factors.map((f,i)=><FactorRow key={i} f={f}/>)}
+              <div style={{display:"flex",gap:12,marginTop:8,fontSize:10,color:"#444"}}>
+                <span>■ <span style={{color:C.gold}}>{r.aName} edge</span></span>
+                <span>■ <span style={{color:C.blue}}>{r.bName} edge</span></span>
+              </div>
+            </Card>
+
+            {/* Kelly for this game */}
+            <Card>
+              <Lbl c={C.green}>Kelly Stake — this game</Lbl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                {(()=>{
+                  const k=kelly(r.winnerP,r.winnerML)*100;
+                  const stake=(k/100*bankroll).toFixed(2);
+                  const win=((mlToDecimal(r.winnerML)-1)*parseFloat(stake)).toFixed(2);
+                  return(
+                    <>
+                      <div style={{background:"rgba(58,138,90,0.06)",border:"1px solid "+C.green,borderRadius:8,padding:"12px 14px"}}>
+                        <div style={{fontSize:9,color:C.muted,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Recommended Bet</div>
+                        <div style={{fontSize:22,fontWeight:900,fontFamily:"monospace",color:"#5aba8a"}}>${stake}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>{k.toFixed(1)}% of ${bankroll} bankroll</div>
+                        <div style={{fontSize:10,color:C.dim,marginTop:1}}>25% fractional Kelly</div>
+                      </div>
+                      <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid "+C.dim,borderRadius:8,padding:"12px 14px"}}>
+                        <div style={{fontSize:9,color:C.muted,letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>If Win</div>
+                        <div style={{fontSize:22,fontWeight:900,fontFamily:"monospace",color:C.gold}}>+${win}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:2}}>{r.winner} at {r.winnerML}</div>
+                        <div style={{fontSize:10,color:C.dim,marginTop:1}}>Model: {(r.winnerP*100).toFixed(1)}% win prob</div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+              <div style={{marginTop:10,fontSize:10,color:C.dim,lineHeight:1.6}}>
+                Kelly Criterion sizes bets proportional to your edge. 25% fractional Kelly reduces variance while preserving long-run growth. Entertainment only.
+              </div>
+            </Card>
+          </>
+        );})()}
+      </div>
+    )}
+
+    {/* ── TAB 2: BEST PLAYS ── */}
+    {tab===2&&(
+      <div className="fadein">
+        {/* Edge filter controls */}
+        <Card style={{marginBottom:14}}>
+          <Lbl c={C.green}>Value Filter — Enter Real Book Odds in Daily Board</Lbl>
+          <div style={{fontSize:11,color:"#4a5a3a",lineHeight:1.7,marginBottom:10}}>
+            For each game in the Daily Board, enter the actual moneyline from your sportsbook (e.g. <span style={{fontFamily:"monospace",color:C.gold}}>+130</span> or <span style={{fontFamily:"monospace",color:C.gold}}>-145</span>). The model will only suggest plays where its probability is higher than what the book implies — that's real edge.
+          </div>
+          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:9,color:C.dim,letterSpacing:2,marginBottom:4}}>MIN EDGE REQUIRED</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {[1,2,3,5].map(pct=>(
+                  <button key={pct} onClick={()=>setMinEdgePct(pct)} style={{
+                    padding:"5px 12px",borderRadius:4,border:"1px solid "+(minEdgePct===pct?C.green:C.border),
+                    background:minEdgePct===pct?"rgba(58,138,90,0.12)":"transparent",
+                    color:minEdgePct===pct?"#5aba8a":C.muted,fontSize:11,cursor:"pointer",fontFamily:"monospace",
+                  }}>{pct}%+</button>
+                ))}
+              </div>
+            </div>
+            <button onClick={()=>results.length&&setParlays(buildParlays(results,bookOdds,minEdgePct))} style={{
+              padding:"8px 16px",borderRadius:6,border:"none",
+              background:"linear-gradient(135deg,#3a8a5a,#2a6a4a)",
+              color:"#080600",fontWeight:900,fontSize:12,letterSpacing:2,
+              textTransform:"uppercase",cursor:"pointer",whiteSpace:"nowrap",
+            }}>
+              Rebuild Plays
+            </button>
+          </div>
+          {parlays&&(
+            <div style={{marginTop:8,fontSize:10,color:C.dim}}>
+              {bookOdds&&Object.keys(bookOdds).length>0
+                ? `${Object.keys(bookOdds).filter(k=>bookOdds[k]).length} book lines entered · ${parlays.edgeFiltered} games pass edge filter`
+                : "No book odds entered yet — showing all High/Medium confidence plays. Enter book odds in Daily Board for true value filtering."}
+            </div>
+          )}
+        </Card>
+
+        {!parlays?(
+          <Card style={{textAlign:"center",padding:32}}>
+            <div style={{fontSize:32,marginBottom:10}}>🎯</div>
+            <div style={{color:C.muted,marginBottom:16}}>Run "Analyze All Games" first to generate today's best plays.</div>
+            <button onClick={()=>setTab(0)} style={{padding:"9px 20px",borderRadius:6,border:"1px solid "+C.gold,background:"transparent",color:C.gold,fontSize:12,cursor:"pointer"}}>Go to Daily Board →</button>
+          </Card>
+        ):(
+          <>
+            {/* Bankroll summary */}
+            <Card style={{marginBottom:14}}>
+              <Lbl c={C.green}>Bankroll: ${bankroll.toLocaleString()}</Lbl>
+              <div style={{fontSize:11,color:C.muted,lineHeight:1.7}}>
+                Plays below use <strong style={{color:C.gold}}>25% fractional Kelly</strong> — the conservative, mathematically optimal bet size based on your model's edge. Only games with &gt;54% win probability are included. Legs are non-correlated (different games only).
+              </div>
+            </Card>
+
+            {/* Singles */}
+            {parlays.singles.length>0&&(
+              <>
+                <div style={{fontSize:10,letterSpacing:3,color:C.gold,textTransform:"uppercase",marginBottom:8,marginTop:4}}>⭐ Best Singles</div>
+                {parlays.singles.map((p,i)=><ParlayCard key={i} play={p} bankroll={bankroll} onViewGame={viewGame}/>)}
+              </>
+            )}
+
+            {/* 2-leg parlays */}
+            {parlays.parlays2.length>0&&(
+              <>
+                <div style={{fontSize:10,letterSpacing:3,color:"#5a9ac0",textTransform:"uppercase",marginBottom:8,marginTop:16}}>🔗 Best 2-Leg Parlays</div>
+                {parlays.parlays2.map((p,i)=><ParlayCard key={i} play={p} bankroll={bankroll} onViewGame={viewGame}/>)}
+              </>
+            )}
+
+            {/* 3-leg parlay */}
+            {parlays.parlays3.length>0&&(
+              <>
+                <div style={{fontSize:10,letterSpacing:3,color:"#9a5ac0",textTransform:"uppercase",marginBottom:8,marginTop:16}}>🎲 Best 3-Leg Parlay</div>
+                {parlays.parlays3.map((p,i)=><ParlayCard key={i} play={p} bankroll={bankroll} onViewGame={viewGame}/>)}
+              </>
+            )}
+
+            {parlays.singles.length===0&&(
+              <Card style={{textAlign:"center",padding:24}}>
+                <div style={{color:C.muted,fontSize:13}}>No strong plays found for {date}.</div>
+                <div style={{color:C.dim,fontSize:11,marginTop:6}}>All games below 54% confidence — best to sit this day out.</div>
+              </Card>
+            )}
+
+            {/* Disclaimer */}
+            <div style={{marginTop:20,padding:"12px 14px",background:"rgba(138,58,58,0.06)",border:"1px solid #3a1a1a",borderRadius:8}}>
+              <div style={{fontSize:10,color:"#6a3a3a",lineHeight:1.7}}>
+                ⚠️ <strong style={{color:"#8a4a4a"}}>Important:</strong> This model is for entertainment and education only. Kelly Criterion assumes your win probability estimate is accurate — models are never perfect. Never bet more than you can afford to lose. Parlay variance is high even with edge; 3-leg plays lose ~83% of the time even at 55% per leg.
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    )}
+
+    {/* ── TAB 3: SEASON RECORD ── */}
+    {tab===3&&(
+      <div className="fadein">
+        <Card style={{marginBottom:14}}>
+          <Lbl>Backtest Date Range</Lbl>
+          <div style={{fontSize:10,color:"#4a4a2a",marginBottom:10,lineHeight:1.6}}>
+            Runs the model on completed games using current season stats. Note: uses today's stats for all dates — early-season predictions have more noise. Medium/High confidence games are the most meaningful signal.
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            <div style={{flex:"1 1 120px"}}>
+              <div style={{fontSize:9,color:C.dim,letterSpacing:2,marginBottom:3}}>FROM</div>
+              <input type="date" value={btStart} onChange={e=>setBtStart(e.target.value)}
+                style={{width:"100%",background:"#0a0907",border:"1px solid "+C.border,borderRadius:6,color:C.text,fontSize:13,padding:"8px 10px",outline:"none",fontFamily:"monospace"}}/>
+            </div>
+            <div style={{flex:"1 1 120px"}}>
+              <div style={{fontSize:9,color:C.dim,letterSpacing:2,marginBottom:3}}>TO</div>
+              <input type="date" value={btEnd} onChange={e=>setBtEnd(e.target.value)}
+                style={{width:"100%",background:"#0a0907",border:"1px solid "+C.border,borderRadius:6,color:C.text,fontSize:13,padding:"8px 10px",outline:"none",fontFamily:"monospace"}}/>
+            </div>
+            <button onClick={runBacktest} disabled={btLoading} style={{
+              padding:"9px 16px",borderRadius:6,border:"none",marginTop:12,
+              background:btLoading?C.dim:"linear-gradient(135deg,#c8922a,#9a6e18)",
+              color:btLoading?C.muted:"#080600",fontWeight:900,fontSize:12,
+              letterSpacing:2,textTransform:"uppercase",cursor:btLoading?"not-allowed":"pointer",
+              display:"flex",alignItems:"center",gap:8,whiteSpace:"nowrap",flex:"0 0 auto",
+            }}>
+              {btLoading&&<Spinner/>}{btLoading?"Running…":"Run Backtest"}
+            </button>
+          </div>
+          {btLoading&&<div style={{marginTop:10,fontSize:11,color:C.muted,display:"flex",gap:8,alignItems:"center"}}><Spinner/>{btProgress}</div>}
+        </Card>
+
+        {btError&&<div style={{marginBottom:14,background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:6,padding:12,color:"#c06060",fontSize:12,fontFamily:"monospace"}}>{btError}</div>}
+
+        {btResults&&(()=>{const bt=btResults; return(
+          <>
+            {/* ── INDIVIDUAL GAME ACCURACY ── */}
+            <div style={{fontSize:10,letterSpacing:3,color:C.gold,textTransform:"uppercase",marginBottom:8}}>📊 Individual Game Accuracy</div>
+            <Card style={{marginBottom:12}}>
+              <Lbl>Win Rate by Confidence</Lbl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                {[["Overall",bt.all,C.text],["High",bt.high,C.gold],["Medium",bt.medium,"#8a8a3a"],["Low",bt.low,C.muted]].map(([label,rec,col])=>(
+                  <div key={label} style={{background:"rgba(255,255,255,0.02)",border:"1px solid "+C.dim,borderRadius:8,padding:"10px 6px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:C.dim,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>{label}</div>
+                    <div style={{fontSize:18,fontWeight:900,fontFamily:"monospace",color:col}}>{rec.pct!==null?rec.pct+"%":"—"}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>{rec.w}-{rec.l}</div>
+                  </div>
+                ))}
+              </div>
+              {/* Calibration */}
+              <div style={{fontSize:9,color:C.dim,letterSpacing:2,marginBottom:6}}>CALIBRATION (predicted vs actual win rate)</div>
+              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                {bt.calibration.map((b,i)=>{
+                  if(!b.games) return null;
+                  const actual=parseFloat(b.actualPct);
+                  const midPred=(b.lo+Math.min(b.hi,0.75))/2*100;
+                  const diff=actual-midPred;
+                  const diffCol=Math.abs(diff)<5?"#5aba8a":Math.abs(diff)<10?"#8a8a3a":"#c06060";
+                  return(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",background:"rgba(255,255,255,0.02)",borderRadius:5,border:"1px solid "+C.dim}}>
+                      <span style={{fontSize:10,color:C.muted,width:55,flexShrink:0}}>{b.label}</span>
+                      <span style={{fontSize:10,color:C.dim,width:48,flexShrink:0}}>{b.games} games</span>
+                      <div style={{flex:1,height:5,background:C.dim,borderRadius:2,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:(b.actualPct||0)+"%",background:"#5a9ac0",borderRadius:2}}/>
+                      </div>
+                      <span style={{fontSize:11,fontFamily:"monospace",color:"#5a9ac0",width:38,textAlign:"right",flexShrink:0}}>{b.actualPct}%</span>
+                      <span style={{fontSize:10,fontFamily:"monospace",color:diffCol,width:40,textAlign:"right",flexShrink:0}}>{diff>0?"+":""}{diff.toFixed(1)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{marginTop:6,fontSize:9,color:C.dim}}>+/- vs predicted midpoint · Green ≤5% · Yellow ≤10% · Red &gt;10% off</div>
+            </Card>
+
+            {/* ── PARLAY TRACKING ── */}
+            <div style={{fontSize:10,letterSpacing:3,color:"#5a9ac0",textTransform:"uppercase",marginBottom:8,marginTop:4}}>🔗 Day-by-Day Parlay Record</div>
+            <Card style={{marginBottom:12}}>
+              <Lbl>Suggested Play Outcomes</Lbl>
+              <div style={{fontSize:10,color:"#3a3a4a",marginBottom:10,lineHeight:1.6}}>
+                Each day's best single, 2-leg, and 3-leg plays were simulated using the same selection logic as the Best Plays tab. Tracks whether the actual suggested parlay hit.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                {[
+                  ["Best Single",bt.p1Record,"#c8922a",bt.p1Roi,bt.p1Bank],
+                  ["2-Leg Parlay",bt.p2Record,"#5a9ac0",bt.p2Roi,bt.p2Bank],
+                  ["3-Leg Parlay",bt.p3Record,"#9a5ac0",bt.p3Roi,bt.p3Bank],
+                ].map(([label,rec,col,roi,bank])=>(
+                  <div key={label} style={{background:"rgba(255,255,255,0.02)",border:"1px solid "+col+"44",borderRadius:8,padding:"10px 8px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:col,letterSpacing:2,textTransform:"uppercase",marginBottom:4}}>{label}</div>
+                    <div style={{fontSize:18,fontWeight:900,fontFamily:"monospace",color:rec.pct!==null&&parseFloat(rec.pct)>50?"#5aba8a":"#c06060"}}>{rec.pct!==null?rec.pct+"%":"—"}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>{rec.w}-{rec.l} ({rec.played} days)</div>
+                    <div style={{fontSize:10,fontFamily:"monospace",color:parseFloat(roi)>=0?"#5aba8a":"#c06060",marginTop:4}}>ROI {roi}%</div>
+                    <div style={{fontSize:9,color:C.dim}}>${""+parseFloat(bank).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Equity curves for each play type */}
+              <div style={{fontSize:9,color:C.dim,letterSpacing:2,marginBottom:6}}>BANKROLL CURVES BY PLAY TYPE</div>
+              <svg width="100%" height="80" style={{display:"block",marginBottom:4}}>
+                {(()=>{
+                  const curves=[
+                    {eq:bt.p1Eq,col:"#c8922a"},
+                    {eq:bt.p2Eq,col:"#5a9ac0"},
+                    {eq:bt.p3Eq,col:"#9a5ac0"},
+                  ];
+                  const allVals=curves.flatMap(c=>c.eq);
+                  if(!allVals.length) return null;
+                  const mn=Math.min(bankroll*0.7,...allVals), mx=Math.max(bankroll*1.3,...allVals), range=mx-mn||1;
+                  const baseY=80-(bankroll-mn)/range*72;
+                  return(<>
+                    <line x1="0" y1={baseY} x2="100%" y2={baseY} stroke={C.dim} strokeWidth="1" strokeDasharray="3,3"/>
+                    {curves.map(({eq,col},ci)=>{
+                      if(eq.length<2) return null;
+                      const pts=eq.map((v,i)=>`${(i/(eq.length-1)*100).toFixed(1)},${(80-(v-mn)/range*72).toFixed(1)}`).join(" ");
+                      return <polyline key={ci} points={pts} fill="none" stroke={col} strokeWidth="1.5" vectorEffect="non-scaling-stroke" opacity="0.85"/>;
+                    })}
+                  </>);
+                })()}
+              </svg>
+              <div style={{display:"flex",gap:16,fontSize:9,color:C.muted}}>
+                <span>■ <span style={{color:"#c8922a"}}>Single</span></span>
+                <span>■ <span style={{color:"#5a9ac0"}}>2-Leg</span></span>
+                <span>■ <span style={{color:"#9a5ac0"}}>3-Leg</span></span>
+                <span style={{color:C.dim}}>· dashed = starting bankroll</span>
+              </div>
+            </Card>
+
+            {/* Day-by-day parlay log */}
+            <Card style={{marginBottom:12}}>
+              <Lbl>Parlay Log by Day</Lbl>
+              <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:360,overflowY:"auto"}}>
+                {bt.parlayDays.slice().reverse().map((day,i)=>(
+                  <div key={i} style={{background:"rgba(255,255,255,0.02)",border:"1px solid "+C.dim,borderRadius:7,padding:"8px 10px"}}>
+                    <div style={{fontSize:10,color:C.muted,fontFamily:"monospace",marginBottom:6,fontWeight:700}}>{day.date}</div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      {[
+                        {key:"single", label:"1-Leg", col:"#c8922a"},
+                        {key:"parlay2", label:"2-Leg", col:"#5a9ac0"},
+                        {key:"parlay3", label:"3-Leg", col:"#9a5ac0"},
+                      ].map(({key,label,col})=>{
+                        const p=day[key]; if(!p) return null;
+                        return(
+                          <div key={key} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",background:p.hit?"rgba(58,138,90,0.07)":"rgba(138,58,58,0.07)",borderRadius:4,border:"1px solid "+(p.hit?"#1a3a2a":"#3a1a1a")}}>
+                            <span style={{fontSize:9,fontWeight:700,color:col,width:32,flexShrink:0}}>{label}</span>
+                            <span style={{fontSize:10,color:p.hit?C.goldLight:"#777",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.label}</span>
+                            <span style={{fontSize:10,color:p.hit?"#5aba8a":"#c06060",flexShrink:0}}>{p.hit?"✓ HIT":"✗ MISS"}</span>
+                            <span style={{fontSize:9,color:C.dim,flexShrink:0}}>{(p.combinedP*100).toFixed(0)}%</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* Individual game log */}
+            <Card>
+              <Lbl>Individual Game Log ({bt.bets.length} games)</Lbl>
+              <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:320,overflowY:"auto"}}>
+                {bt.bets.slice().reverse().map((r,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 9px",background:r.correct?"rgba(58,138,90,0.06)":"rgba(138,58,58,0.06)",borderRadius:5,border:"1px solid "+(r.correct?"#1a3a2a":"#3a1a1a"),flexWrap:"wrap"}}>
+                    <span style={{fontSize:9,color:C.dim,width:70,flexShrink:0,fontFamily:"monospace"}}>{r.date}</span>
+                    <span style={{fontSize:10,color:r.correct?C.goldLight:"#888",flex:1,fontWeight:r.correct?700:400}}>{r.winner}</span>
+                    <span style={{fontSize:9,color:r.correct?"#3a6a3a":"#6a3a3a",flexShrink:0}}>{r.correct?"✓":"✗"} {r.actualWinner.split(" ").pop()}</span>
+                    <span style={{fontSize:10,fontFamily:"monospace",color:r.winnerML.startsWith("+")?C.green:C.text,width:40,textAlign:"right",flexShrink:0}}>{r.winnerML}</span>
+                    <span style={{fontSize:9,color:confCol(r.confidence),width:34,textAlign:"right",flexShrink:0}}>{r.confidence}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </>
+        );})()}
+      </div>
+    )}
+  </div>
+</div>
+```
+
+);
+}
+
+ReactDOM.createRoot(document.getElementById(“root”)).render(<App/>);
+</script>
+
+</body>
+</html>
