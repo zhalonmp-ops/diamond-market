@@ -236,29 +236,58 @@ function priceToML(price) {
   return '+' + Math.round((1 - price) / price * 100);
 }
 
+// MLB team abbreviations used by Kalshi
+var TEAM_ABBR = {
+  'Arizona Diamondbacks':'ARI','Atlanta Braves':'ATL','Baltimore Orioles':'BAL',
+  'Boston Red Sox':'BOS','Chicago Cubs':'CHC','Chicago White Sox':'CWS',
+  'Cincinnati Reds':'CIN','Cleveland Guardians':'CLE','Colorado Rockies':'COL',
+  'Detroit Tigers':'DET','Houston Astros':'HOU','Kansas City Royals':'KC',
+  'Los Angeles Angels':'LAA','Los Angeles Dodgers':'LAD','Miami Marlins':'MIA',
+  'Milwaukee Brewers':'MIL','Minnesota Twins':'MIN','New York Mets':'NYM',
+  'New York Yankees':'NYY','Oakland Athletics':'OAK','Philadelphia Phillies':'PHI',
+  'Pittsburgh Pirates':'PIT','San Diego Padres':'SD','San Francisco Giants':'SF',
+  'Seattle Mariners':'SEA','St. Louis Cardinals':'STL','Tampa Bay Rays':'TB',
+  'Texas Rangers':'TEX','Toronto Blue Jays':'TOR','Washington Nationals':'WSH'
+};
+
 function teamInTitle(title, teamName) {
   var t = (title || '').toLowerCase();
+  // Try abbreviation first (e.g. WSH, MIA)
+  var abbr = TEAM_ABBR[teamName];
+  if (abbr && t.includes(abbr.toLowerCase())) return true;
+  // Try nickname (last word: Marlins, Yankees, Cubs)
   var words = teamName.toLowerCase().split(' ');
-  // Check full name or last word (team nickname)
-  return words.some(function(w){ return w.length > 3 && t.includes(w); });
+  var nick = words[words.length - 1];
+  if (nick.length > 3 && t.includes(nick)) return true;
+  // Try city name
+  if (words[0].length > 3 && t.includes(words[0])) return true;
+  return false;
 }
 
 function fetchKalshiOdds(results) {
   // Try multiple series tickers Kalshi uses for MLB game winners
-  var tickers = ['KXMLBGW','KXMLB','MLBGAME','KXBASEBALLGW','MLBGW','BASEBALL'];
+  var tickers = [
+    'KXMLBGW','KXMLB','MLBGW','KXBASEBALLGW','MLBGAME','BASEBALL',
+    'KXMLBWIN','MLBWIN','PROBASEBALL','KXPROBASEBALL','BASEBALLGW'
+  ];
   var baseURL = KALSHI + '/events?status=open&limit=200&series_ticker=';
 
   function tryTicker(idx) {
     if (idx >= tickers.length) {
       // Last resort: fetch all open sports events
-      return fetch(KALSHI + '/events?status=open&limit=500').then(function(r){
+      // Build list of all team abbreviations for today's games
+    var abbrs = [];
+    results.forEach(function(g){
+      if(TEAM_ABBR[g.aName]) abbrs.push(TEAM_ABBR[g.aName].toLowerCase());
+      if(TEAM_ABBR[g.bName]) abbrs.push(TEAM_ABBR[g.bName].toLowerCase());
+    });
+    return fetch(KALSHI + '/events?status=open&limit=1000').then(function(r){
         return r.ok ? r.json() : {events:[]};
       }).then(function(d){
         var evs = (d.events||[]).filter(function(e){
           var t=(e.title||'').toLowerCase();
-          return t.includes('baseball')||t.includes('mlb')||results.some(function(g){
-            return teamInTitle(t,g.aName)||teamInTitle(t,g.bName);
-          });
+          if(t.includes('baseball')||t.includes('mlb')) return true;
+          return abbrs.some(function(a){ return t.includes(a); });
         });
         return evs.length ? matchEvents(evs, results) : Promise.resolve({});
       }).catch(function(){ return {}; });
