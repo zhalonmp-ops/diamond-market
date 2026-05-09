@@ -67,12 +67,14 @@ button.edge-btn.active{border-color:#5aba8a;background:rgba(90,186,138,.12);colo
   <button class="tab" onclick="showTab(1)">Game Detail</button>
   <button class="tab" onclick="showTab(2)">Best Plays</button>
   <button class="tab" onclick="showTab(3)">Season Record</button>
+  <button class="tab" onclick="showTab(4)">Trade Log</button>
 </div>
 
 <div id="tab0" class="panel active"></div>
 <div id="tab1" class="panel"></div>
 <div id="tab2" class="panel"></div>
 <div id="tab3" class="panel"></div>
+<div id="tab4" class="panel"></div>
 
 <script>
 // ── STATE ─────────────────────────────────────────────────────────────────────
@@ -227,103 +229,95 @@ function cachedStats(id,yr) {
 // ── KALSHI API ────────────────────────────────────────────────────────────────
 var KALSHI = 'https://external-api.kalshi.com/trade-api/v2';
 
-// Convert Kalshi price (0-1) to American moneyline
 function priceToML(price) {
   price = parseFloat(price);
-  if (!price || isNaN(price)) return null;
+  if (!price || isNaN(price) || price <= 0 || price >= 1) return null;
   if (price >= 0.5) return '-' + Math.round(price / (1 - price) * 100);
   return '+' + Math.round((1 - price) / price * 100);
 }
 
-// Check if event title mentions both teams
-function titleMatchesGame(title, awayName, homeName) {
+function teamInTitle(title, teamName) {
   var t = (title || '').toLowerCase();
-  var away = awayName.split(' ').pop().toLowerCase();
-  var home = homeName.split(' ').pop().toLowerCase();
-  return t.includes(away) || t.includes(home);
+  var words = teamName.toLowerCase().split(' ');
+  // Check full name or last word (team nickname)
+  return words.some(function(w){ return w.length > 3 && t.includes(w); });
 }
 
-// Fetch Kalshi MLB game-winner odds and match to our games
 function fetchKalshiOdds(results) {
-  // Try several series tickers Kalshi uses for MLB game winners
-  var attempts = [
-    KALSHI + '/events?series_ticker=KXMLB&status=open&limit=200',
-    KALSHI + '/events?category=Sports&status=open&limit=500',
-    KALSHI + '/markets?series_ticker=KXMLB&status=open&limit=200',
-  ];
+  // Try multiple series tickers Kalshi uses for MLB game winners
+  var tickers = ['KXMLBGW','KXMLB','MLBGAME','KXBASEBALLGW','MLBGW','BASEBALL'];
+  var baseURL = KALSHI + '/events?status=open&limit=200&series_ticker=';
 
-  function tryNext(idx) {
-    if (idx >= attempts.length) return Promise.resolve({});
-    return fetch(attempts[idx]).then(function(r) {
-      if (!r.ok) return tryNext(idx + 1);
-      return r.json().then(function(data) {
-        var items = data.events || data.markets || [];
-        if (!items.length) return tryNext(idx + 1);
-        return matchKalshiToGames(items, results, data.events ? 'events' : 'markets');
+  function tryTicker(idx) {
+    if (idx >= tickers.length) {
+      // Last resort: fetch all open sports events
+      return fetch(KALSHI + '/events?status=open&limit=500').then(function(r){
+        return r.ok ? r.json() : {events:[]};
+      }).then(function(d){
+        var evs = (d.events||[]).filter(function(e){
+          var t=(e.title||'').toLowerCase();
+          return t.includes('baseball')||t.includes('mlb')||results.some(function(g){
+            return teamInTitle(t,g.aName)||teamInTitle(t,g.bName);
+          });
+        });
+        return evs.length ? matchEvents(evs, results) : Promise.resolve({});
+      }).catch(function(){ return {}; });
+    }
+    return fetch(baseURL + tickers[idx]).then(function(r){
+      if (!r.ok) return tryTicker(idx+1);
+      return r.json().then(function(d){
+        var evs = d.events || [];
+        if (!evs.length) return tryTicker(idx+1);
+        return matchEvents(evs, results);
       });
-    }).catch(function() { return tryNext(idx + 1); });
+    }).catch(function(){ return tryTicker(idx+1); });
   }
 
-  return tryNext(0).catch(function() { return {}; });
+  return tryTicker(0);
 }
 
-function matchKalshiToGames(items, results, type) {
+function matchEvents(events, results) {
   var odds = {};
   var promises = [];
 
   results.forEach(function(game) {
-    var awayLast = game.aName.split(' ').pop().toLowerCase();
-    var homeLast = game.bName.split(' ').pop().toLowerCase();
-
-    // Find matching Kalshi item
-    var match = null;
-    for (var i = 0; i < items.length; i++) {
-      var item = items[i];
-      var title = (item.title || item.yes_sub_title || item.subtitle || '').toLowerCase();
-      if (title.includes(awayLast) && title.includes(homeLast)) {
-        match = item; break;
-      }
-      // Try partial match
-      if (!match && (title.includes(awayLast) || title.includes(homeLast))) {
-        match = item;
-      }
+    var matched = null;
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var t = (e.title || e.subtitle || '').toLowerCase();
+      var awayMatch = teamInTitle(t, game.aName);
+      var homeMatch = teamInTitle(t, game.bName);
+      if (awayMatch && homeMatch) { matched = e; break; }
     }
+    if (!matched) return;
 
-    if (!match) return;
+    var ticker = matched.event_ticker || matched.ticker;
+    if (!ticker) return;
 
-    if (type === 'markets') {
-      // Direct market — get price for predicted winner
-      var price = parseFloat(match.yes_bid_dollars) || parseFloat(match.last_price_dollars);
-      var matchTitle = (match.yes_sub_title || match.title || '').toLowerCase();
-      var teamName = matchTitle.includes(game.winner.split(' ').pop().toLowerCase())
-        ? game.winner : null;
-      if (price && teamName) {
-        odds[game.gamePk] = priceToML(price);
-      }
-    } else {
-      // Event — need to fetch its markets
-      var eventTicker = match.event_ticker || match.ticker;
-      if (!eventTicker) return;
-      promises.push(
-        fetch(KALSHI + '/markets?event_ticker=' + eventTicker + '&status=open').then(function(r) {
-          if (!r.ok) return;
-          return r.json().then(function(md) {
-            var markets = md.markets || [];
-            var winnerLast = game.winner.split(' ').pop().toLowerCase();
-            markets.forEach(function(mkt) {
-              var mTitle = (mkt.yes_sub_title || mkt.title || '').toLowerCase();
-              if (mTitle.includes(winnerLast)) {
-                var price = parseFloat(mkt.yes_bid_dollars) || parseFloat(mkt.last_price_dollars);
-                if (price) odds[game.gamePk] = priceToML(price);
-              }
-            });
+    promises.push(
+      fetch(KALSHI + '/markets?event_ticker=' + ticker + '&status=open').then(function(r){
+        if (!r.ok) return;
+        return r.json().then(function(md){
+          var markets = md.markets || [];
+          var winnerWords = game.winner.toLowerCase().split(' ');
+          markets.forEach(function(mkt){
+            var mt = (mkt.yes_sub_title || mkt.title || '').toLowerCase();
+            var isWinner = winnerWords.some(function(w){ return w.length>3 && mt.includes(w); });
+            if (isWinner) {
+              // Use mid-price between bid and ask for best estimate
+              var bid = parseFloat(mkt.yes_bid_dollars)||0;
+              var ask = parseFloat(mkt.yes_ask_dollars)||0;
+              var price = (bid && ask) ? (bid+ask)/2 : (bid||ask||parseFloat(mkt.last_price_dollars)||0);
+              var ml = priceToML(price);
+              if (ml) odds[game.gamePk] = ml;
+            }
           });
-        }).catch(function(){})
-      );
-    }
+        });
+      }).catch(function(){})
+    );
   });
 
-  return Promise.all(promises).then(function() { return odds; });
+  return Promise.all(promises).then(function(){ return odds; });
 }
 
 // ── MODEL ─────────────────────────────────────────────────────────────────────
@@ -551,6 +545,7 @@ function showTab(n) {
   if(n===1) renderDetail();
   if(n===2) renderPlays();
   if(n===3) renderBacktest();
+  if(n===4) renderTradeLog();
 }
 
 // ── TAB 0: DAILY BOARD ────────────────────────────────────────────────────────
@@ -565,9 +560,11 @@ function autoFillKalshi() {
     lsSet('dm-bookodds', S.bookOdds);
     if (filled > 0) {
       S.parlays = buildParlays(S.results, S.bookOdds, S.minEdge);
-      alert('Filled ' + filled + ' Kalshi lines! Edge calculations updated.');
+      alert('Auto-filled ' + filled + ' Kalshi lines! Check Best Plays for edge calculations.');
     } else {
-      alert('No Kalshi MLB markets found for today. They may not be open yet, or the API returned no matches. Try entering odds manually.');
+      // Show team names we searched for to help debug
+      var teams = S.results.slice(0,3).map(function(r){return r.winner;}).join(', ');
+      alert('No Kalshi markets matched today\'s games (' + teams + '...). \n\nKalshi markets for today\'s MLB games may not be open yet (usually opens morning of game day). Try again closer to game time, or enter odds manually.');
     }
     renderBoard();
   }).catch(function(e) {
@@ -575,6 +572,265 @@ function autoFillKalshi() {
     renderBoard();
   });
 }
+
+
+// ── TRADE LOG ─────────────────────────────────────────────────────────────────
+function loadTrades() {
+  try { return JSON.parse(localStorage.getItem('dm-trades') || '[]'); } catch(e) { return []; }
+}
+function saveTrades(trades) {
+  try { localStorage.setItem('dm-trades', JSON.stringify(trades)); } catch(e) {}
+}
+
+function logTrade(result, bookML, stake) {
+  var trades = loadTrades();
+  var edge = bookML ? calcEdge(result.winnerP, bookML) : null;
+  trades.unshift({
+    id: Date.now(),
+    date: S.date,
+    team: result.winner,
+    opponent: result.winner === result.aName ? result.bName : result.aName,
+    confidence: result.confidence,
+    modelP: (result.winnerP * 100).toFixed(1),
+    modelML: result.winnerML,
+    bookML: bookML || '',
+    edge: edge !== null ? (edge * 100).toFixed(1) : '',
+    stake: stake || '',
+    result: 'pending',
+    pnl: ''
+  });
+  saveTrades(trades);
+  return trades;
+}
+
+function updateTrade(id, result, pnl) {
+  var trades = loadTrades();
+  trades = trades.map(function(t) {
+    if (t.id === id) { t.result = result; t.pnl = pnl; }
+    return t;
+  });
+  saveTrades(trades);
+  renderTradeLog();
+}
+
+function deleteTrade(id) {
+  var trades = loadTrades().filter(function(t) { return t.id !== id; });
+  saveTrades(trades);
+  renderTradeLog();
+}
+
+function exportCSV() {
+  var trades = loadTrades();
+  if (!trades.length) { alert('No trades to export.'); return; }
+  var rows = ['Date,Team,Opponent,Confidence,Model%,Model ML,Book ML,Edge%,Stake,Result,P&L'];
+  trades.forEach(function(t) {
+    rows.push([t.date,t.team,t.opponent,t.confidence,t.modelP,t.modelML,t.bookML,t.edge,t.stake,t.result,t.pnl].join(','));
+  });
+  var blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'diamond-market-trades.csv';
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function calcStats(trades) {
+  var settled = trades.filter(function(t){ return t.result==='win'||t.result==='loss'; });
+  var wins = settled.filter(function(t){ return t.result==='win'; });
+  var totalStake = settled.reduce(function(s,t){ return s+(parseFloat(t.stake)||0); }, 0);
+  var totalPnl = settled.reduce(function(s,t){ return s+(parseFloat(t.pnl)||0); }, 0);
+  var highEdge = trades.filter(function(t){ return parseFloat(t.edge)>=3; });
+  var highEdgeWins = highEdge.filter(function(t){ return t.result==='win'; });
+  return {
+    total: settled.length, wins: wins.length,
+    pct: settled.length ? (wins.length/settled.length*100).toFixed(1) : null,
+    totalPnl: totalPnl.toFixed(2), roi: totalStake ? (totalPnl/totalStake*100).toFixed(1) : null,
+    pending: trades.filter(function(t){ return t.result==='pending'; }).length,
+    highEdgePct: highEdge.length ? (highEdgeWins.length/highEdge.filter(function(t){return t.result==='win'||t.result==='loss';}).length*100).toFixed(1) : null,
+    highEdgeCount: highEdge.filter(function(t){return t.result==='win'||t.result==='loss';}).length
+  };
+}
+
+function renderTradeLog() {
+  var trades = loadTrades();
+  var stats = calcStats(trades);
+  var html = '';
+
+  // Stats summary
+  html += '<div class="card" style="margin-bottom:12px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">';
+  html += '<div class="lbl" style="margin-bottom:0">Trade Log</div>';
+  html += '<div style="display:flex;gap:8px">';
+  html += '<button onclick="exportCSV()" style="padding:5px 12px;border-radius:5px;border:1px solid #252015;background:transparent;color:#6a5a3a;font-size:11px;cursor:pointer">Export CSV</button>';
+  html += '<button onclick="showLogTrade()" style="padding:5px 12px;border-radius:5px;border:none;background:linear-gradient(135deg,#c8922a,#9a6e18);color:#080600;font-size:11px;font-weight:700;cursor:pointer">+ Log Trade</button>';
+  html += '</div></div>';
+
+  // Stats row
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:4px">';
+  [
+    ['Record', stats.total ? stats.wins+'-'+(stats.total-stats.wins) : '—', false],
+    ['Win %', stats.pct ? stats.pct+'%' : '—', parseFloat(stats.pct)>55],
+    ['P&L', stats.roi ? (parseFloat(stats.totalPnl)>=0?'+':'')+stats.totalPnl : '—', parseFloat(stats.totalPnl)>=0],
+    ['ROI', stats.roi ? stats.roi+'%' : '—', parseFloat(stats.roi)>=0],
+  ].forEach(function(item) {
+    var col = item[2] ? '#5aba8a' : (item[2]===false && item[1]!=='—') ? '#c06060' : '#c8b890';
+    if (item[1]==='—') col='#6a5a3a';
+    html += '<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:7px;padding:8px 6px;text-align:center">';
+    html += '<div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px">'+item[0]+'</div>';
+    html += '<div style="font-size:15px;font-weight:900;font-family:monospace;color:'+col+'">'+item[1]+'</div></div>';
+  });
+  html += '</div>';
+
+  if (stats.highEdgeCount > 0) {
+    html += '<div style="margin-top:8px;padding:7px 10px;background:rgba(90,186,138,.05);border:1px solid #1a3a2a;border-radius:6px;font-size:11px;color:#3a6a4a">';
+    html += '3%+ edge plays: <strong style="color:#5aba8a">'+stats.highEdgePct+'%</strong> win rate ('+stats.highEdgeCount+' settled)';
+    html += '</div>';
+  }
+
+  if (stats.pending > 0) {
+    html += '<div style="margin-top:6px;font-size:10px;color:#6a5a3a">'+stats.pending+' pending — tap a trade to mark result</div>';
+  }
+  html += '</div>';
+
+  // Log trade form (hidden by default)
+  html += '<div id="log-form" style="display:none" class="card" style="margin-bottom:12px">';
+  html += '<div class="lbl">Log New Trade</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:8px">';
+
+  // Team picker from today&#39;s results
+  if (S.results.length) {
+    html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:4px">PICK FROM TODAY&#39;S GAMES</div>';
+    html += '<select id="lt-game" style="width:100%;font-size:13px;padding:9px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none">';
+    html += '<option value="">Select game...</option>';
+    S.results.forEach(function(r, i) {
+      html += '<option value="'+i+'">'+r.winner+' vs '+(r.winner===r.aName?r.bName:r.aName)+' ('+r.confidence+' '+( r.winnerP*100).toFixed(0)+'%)</option>';
+    });
+    html += '</select></div>';
+  } else {
+    html += '<div style="font-size:11px;color:#6a5a3a">Run Analyze All on Daily Board first to pick from today&#39;s games, or fill in manually below.</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+    html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">TEAM BET</div><input id="lt-team" type="text" placeholder="e.g. Chicago Cubs" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>';
+    html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">OPPONENT</div><input id="lt-opp" type="text" placeholder="e.g. Cardinals" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>';
+    html += '</div>';
+  }
+
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">';
+  html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">BOOK ML</div><input id="lt-bookml" type="text" placeholder="-150" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none;font-family:monospace"></div>';
+  html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">STAKE $</div><input id="lt-stake" type="number" placeholder="25" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>';
+  html += '<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">DATE</div><input id="lt-date" type="date" value="'+S.date+'" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>';
+  html += '</div>';
+
+  html += '<div style="display:flex;gap:8px;margin-top:4px">';
+  html += '<button onclick="submitTrade()" style="flex:1;padding:10px;border-radius:6px;border:none;background:linear-gradient(135deg,#c8922a,#9a6e18);color:#080600;font-weight:900;font-size:13px;cursor:pointer">Save Trade</button>';
+  html += '<button onclick="hideLogTrade()" style="padding:10px 16px;border-radius:6px;border:1px solid #252015;background:transparent;color:#6a5a3a;font-size:12px;cursor:pointer">Cancel</button>';
+  html += '</div></div></div>';
+
+  // Trade list
+  if (!trades.length) {
+    html += '<div class="card" style="text-align:center;padding:28px"><div style="font-size:28px;margin-bottom:10px">📋</div><div style="color:#6a5a3a">No trades logged yet.<br>Tap "+ Log Trade" after analyzing games.</div></div>';
+  } else {
+    html += '<div style="display:flex;flex-direction:column;gap:6px">';
+    trades.forEach(function(t) {
+      var isPending = t.result === 'pending';
+      var isWin = t.result === 'win';
+      var bg = isPending ? 'rgba(255,255,255,.02)' : isWin ? 'rgba(58,138,90,.07)' : 'rgba(138,58,58,.07)';
+      var brd = isPending ? '#252015' : isWin ? '#1a3a2a' : '#3a1a1a';
+      var edgeCol = parseFloat(t.edge)>=5?'#5aba8a':parseFloat(t.edge)>=2?'#8aba5a':parseFloat(t.edge)>=0?'#c0c060':'#c06060';
+
+      html += '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:8px;padding:11px 13px">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">';
+      html += '<div style="flex:1">';
+      html += '<div style="font-size:13px;font-weight:700;color:'+(isWin?'#e0b040':isPending?'#c8b890':'#888')+'">'+t.team+'</div>';
+      html += '<div style="font-size:10px;color:#6a5a3a;margin-top:2px">vs '+t.opponent+' · '+t.date+'</div>';
+      html += '<div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap">';
+      if(t.bookML) html += '<span style="font-size:11px;font-family:monospace;color:'+(t.bookML[0]==='+'?'#5aba8a':'#c8b890')+'">'+t.bookML+'</span>';
+      if(t.edge) html += '<span style="font-size:11px;font-family:monospace;color:'+edgeCol+'">'+t.edge+'% edge</span>';
+      if(t.stake) html += '<span style="font-size:11px;color:#6a5a3a">$'+t.stake+' stake</span>';
+      html += '<span style="font-size:10px;font-weight:700;color:'+confCol(t.confidence)+'">'+t.confidence+'</span>';
+      html += '</div></div>';
+
+      html += '<div style="text-align:right">';
+      if (isPending) {
+        var payout = t.bookML ? ((mlToDecimal(t.bookML)-1)*parseFloat(t.stake||0)).toFixed(2) : '?';
+        html += '<div style="font-size:10px;color:#6a5a3a;margin-bottom:4px">+$'+payout+' if win</div>';
+        html += '<div style="display:flex;gap:5px">';
+        html += '<button onclick="markResult('+t.id+',\'win\')" style="padding:4px 10px;border-radius:4px;border:none;background:#2a5a3a;color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer">WIN</button>';
+        html += '<button onclick="markResult('+t.id+',\'loss\')" style="padding:4px 10px;border-radius:4px;border:none;background:#5a2a2a;color:#c06060;font-size:11px;font-weight:700;cursor:pointer">LOSS</button>';
+        html += '</div>';
+      } else {
+        var pnlNum = parseFloat(t.pnl)||0;
+        html += '<div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(pnlNum>=0?'#5aba8a':'#c06060')+'">'+(pnlNum>=0?'+':'')+'$'+t.pnl+'</div>';
+        html += '<div style="font-size:10px;color:'+(isWin?'#3a6a3a':'#6a3a3a')+';margin-top:2px">'+(isWin?'WIN':'LOSS')+'</div>';
+      }
+      html += '</div></div>';
+      html += '<button onclick="deleteTrade('+t.id+')" style="margin-top:6px;padding:2px 8px;border-radius:3px;border:1px solid #2e2416;background:transparent;color:#3a2a1a;font-size:9px;cursor:pointer">remove</button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  document.getElementById('tab4').innerHTML = html;
+}
+
+
+function quickLogTrade() {
+  if (!S.detail) return;
+  var r = S.detail;
+  var bookML = S.bookOdds[r.gamePk] || '';
+  var stake = bookML ? (kelly(r.winnerP, bookML) * S.bankroll * 0.25).toFixed(0) : '';
+  logTrade(r, bookML, stake);
+  alert('Trade logged! Go to Trade Log tab to track result.');
+}
+
+function showLogTrade() {
+  var f = document.getElementById('log-form');
+  if (f) f.style.display = 'block';
+}
+function hideLogTrade() {
+  var f = document.getElementById('log-form');
+  if (f) f.style.display = 'none';
+}
+
+function submitTrade() {
+  var gameIdx = document.getElementById('lt-game');
+  var bookML = (document.getElementById('lt-bookml')||{}).value || '';
+  var stake = (document.getElementById('lt-stake')||{}).value || '';
+  var date = (document.getElementById('lt-date')||{}).value || S.date;
+
+  var result;
+  if (gameIdx && gameIdx.value !== '') {
+    var r = S.results[parseInt(gameIdx.value)];
+    if (!r) { alert('Select a game first.'); return; }
+    // Use book ML from bookOdds if available
+    if (!bookML && S.bookOdds[r.gamePk]) bookML = S.bookOdds[r.gamePk];
+    result = r;
+  } else {
+    var team = (document.getElementById('lt-team')||{}).value;
+    var opp = (document.getElementById('lt-opp')||{}).value;
+    if (!team) { alert('Enter a team name.'); return; }
+    result = {winner:team, aName:team, bName:opp||'?', winnerP:0, winnerML:'', confidence:'—', gamePk: Date.now()};
+  }
+
+  if (!stake) { alert('Enter a stake amount.'); return; }
+
+  var trades = logTrade(result, bookML, parseFloat(stake));
+  hideLogTrade();
+  renderTradeLog();
+}
+
+function markResult(id, result) {
+  var trades = loadTrades();
+  var trade = trades.find(function(t){ return t.id===id; });
+  if (!trade) return;
+  var stake = parseFloat(trade.stake)||0;
+  var pnl;
+  if (result === 'win') {
+    pnl = trade.bookML ? ((mlToDecimal(trade.bookML)-1)*stake).toFixed(2) : stake.toFixed(2);
+  } else {
+    pnl = (-stake).toFixed(2);
+  }
+  updateTrade(id, result, pnl);
+}
+
 
 function renderBoard() {
   var html='<div class="card">';
