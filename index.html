@@ -861,317 +861,373 @@ function markResult(id, result) {
 }
 
 
-function renderBoard() {
-  var html='<div class="card">';
-  html+='<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
-  html+='<input type="date" id="date-input" value="'+S.date+'" style="flex:1 1 140px;font-size:14px">';
-  html+='<div style="display:flex;align-items:center;gap:6px;flex:1 1 130px"><span style="font-size:11px;color:#6a5a3a;white-space:nowrap">Bankroll $</span><input type="number" id="bankroll-input" value="'+S.bankroll+'" min="100" style="flex:1;font-size:14px"></div>';
-  html+='<button class="primary" id="analyze-btn" '+(S.loading?'disabled':'')+'>'+( S.loading?'<span class="spin"></span>Analyzing...':'Analyze All')+'</button>';
-  html+='</div>';
-  if(S.loading) html+='<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>'+S.progress+'</div>';
-  html+='</div>';
-  if(S.error) html+='<div class="error-box">'+S.error+'</div>';
-  if(S.results.length) {
-    html+='<div class="card">';
-html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">';
-html+='<div class="lbl" style="margin-bottom:0">'+S.results.length+' Games — '+S.date+'</div>';
-html+='<button onclick="autoFillKalshi()" id="kalshi-btn" style="padding:6px 14px;border-radius:6px;border:1px solid #3a5a3a;background:rgba(90,186,138,0.1);color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:1px">⚡ Auto-fill Kalshi Odds</button>';
-html+='</div>';
-    var sorted=S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;});
-    sorted.forEach(function(r,i) {
-      var edge=S.bookOdds[r.gamePk]?calcEdge(r.winnerP,S.bookOdds[r.gamePk]):null;
-      var edgeStr=edge!==null?'<span style="font-size:10px;font-weight:700;font-family:monospace;color:'+(edge>=0.05?'#5aba8a':edge>=0.02?'#8aba5a':edge>=0?'#c0c060':'#c06060')+'">'+(edge>=0?'+':'')+(edge*100).toFixed(1)+'%</span>':'';
-      html+='<div class="game-row" id="game-row-'+i+'">';
-      html+='<div onclick="viewGame('+i+')">';
-      html+='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">';
-      html+='<div style="flex:1"><span style="font-size:13px;font-weight:700;color:#e0b040">'+r.winner+'</span><span style="font-size:11px;color:#6a5a3a;margin:0 6px">def.</span><span style="font-size:13px;color:#555">'+(r.winner===r.aName?r.bName:r.aName)+'</span></div>';
-      html+='<div style="display:flex;gap:8px;align-items:center"><span style="font-size:12px;font-family:monospace;color:'+(r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';font-weight:700">'+r.winnerML+'</span><span style="font-size:11px;color:#c8b890">'+(r.winnerP*100).toFixed(0)+'%</span><span style="font-size:10px;font-weight:700;color:'+confCol(r.confidence)+'">'+r.confidence+'</span></div>';
-      html+='</div><div style="margin-top:3px;font-size:10px;color:#6a5a3a">'+r.time+' · O/U '+r.ou+'</div></div>';
-      html+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">';
-      html+='<span style="font-size:9px;color:#2e2416;white-space:nowrap">Book ML:</span>';
-      html+='<input type="text" placeholder="+110" value="'+(S.bookOdds[r.gamePk]||'')+'" data-gpk="'+r.gamePk+'" onclick="event.stopPropagation()" oninput="setBookOdd(this)" style="width:64px;border-color:'+(S.bookOdds[r.gamePk]?'#3a5a3a':'#2e2416')+';color:'+(S.bookOdds[r.gamePk]?'#5aba8a':'#6a5a3a')+';font-size:11px;padding:3px 6px;text-align:center">';
-      html+=edgeStr+'</div></div>';
+
+function debugKalshi() {
+  var out = document.getElementById('kalshi-debug');
+  if (!out) return;
+  out.innerHTML = 'Fetching...';
+  
+  // Try to get raw events
+  fetch('https://external-api.kalshi.com/trade-api/v2/events?status=open&limit=50')
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      var evs = d.events || [];
+      var baseballEvs = evs.filter(function(e){
+        var t=(e.title||e.subtitle||e.event_ticker||'').toLowerCase();
+        return t.includes('baseball')||t.includes('mlb')||t.includes('jays')||
+               t.includes('yankee')||t.includes('sox')||t.includes('cubs')||
+               t.includes('astro')||t.includes('tor')||t.includes('nyy')||
+               t.includes('hou')||t.includes('chc');
+      });
+      var txt = 'Total open events: '+evs.length+'\n';
+      txt += 'Baseball-related: '+baseballEvs.length+'\n\n';
+      txt += 'First 5 event titles:\n';
+      evs.slice(0,5).forEach(function(e,i){
+        txt += i+': ticker='+e.event_ticker+' title='+e.title+'\n';
+      });
+      txt += '\nBaseball matches:\n';
+      baseballEvs.slice(0,10).forEach(function(e){
+        txt += 'ticker='+e.event_ticker+' title='+e.title+'\n';
+      });
+      out.innerHTML = '<pre style="font-size:10px;color:#5aba8a;white-space:pre-wrap;word-break:break-all">'+txt+'</pre>';
+
+```
+}).catch(function(e){
+  // Try markets endpoint instead
+  fetch('https://external-api.kalshi.com/trade-api/v2/markets?status=open&limit=50')
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var mkts = d.markets || [];
+      var txt = 'Markets endpoint - Total: '+mkts.length+'\n';
+      mkts.slice(0,10).forEach(function(m,i){
+        txt += i+': ticker='+m.ticker+' title='+m.title+' yes='+m.yes_sub_title+'\n';
+      });
+      out.innerHTML = '<pre style="font-size:10px;color:#8aba5a;white-space:pre-wrap;word-break:break-all">'+txt+'</pre>';
+    }).catch(function(e2){
+      out.innerHTML = '<span style="color:#c06060">Both endpoints failed: '+e.message+' / '+e2.message+'</span>';
     });
-    html+='</div>';
-  }
-  document.getElementById('tab0').innerHTML=html;
-  document.getElementById('date-input').onchange=function(){set('date',this.value);S.results=[];S.parlays=null;renderBoard();};
-  document.getElementById('bankroll-input').onchange=function(){set('bankroll',parseFloat(this.value)||1000);};
-  var btn=document.getElementById('analyze-btn');
-  if(btn) btn.onclick=doAnalyze;
+});
+```
+
+}
+
+function renderBoard() {
+var html=’<div class="card">’;
+html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">’;
+html+=’<input type="date" id="date-input" value="'+S.date+'" style="flex:1 1 140px;font-size:14px">’;
+html+=’<div style="display:flex;align-items:center;gap:6px;flex:1 1 130px"><span style="font-size:11px;color:#6a5a3a;white-space:nowrap">Bankroll $</span><input type="number" id="bankroll-input" value="'+S.bankroll+'" min="100" style="flex:1;font-size:14px"></div>’;
+html+=’<button class=“primary” id=“analyze-btn” ‘+(S.loading?‘disabled’:’’)+’>’+( S.loading?’<span class="spin"></span>Analyzing…’:‘Analyze All’)+’</button>’;
+html+=’</div>’;
+if(S.loading) html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.progress+’</div>’;
+html+=’</div>’;
+if(S.error) html+=’<div class="error-box">’+S.error+’</div>’;
+// Kalshi debug section
+html+=’<div style="margin-bottom:14px;padding:10px 14px;background:rgba(255,255,255,.01);border:1px solid #1a1a0a;border-radius:8px">’;
+html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">’;
+html+=’<span style="font-size:9px;color:#3a3020;letter-spacing:2px">KALSHI API DEBUG</span>’;
+html+=’<button onclick="debugKalshi()" style="padding:3px 10px;border-radius:4px;border:1px solid #2e2416;background:transparent;color:#4a4020;font-size:10px;cursor:pointer">Test API</button>’;
+html+=’</div><div id="kalshi-debug" style="font-size:10px;color:#4a4020">Tap Test API to see what Kalshi returns for your market search.</div></div>’;
+if(S.results.length) {
+html+=’<div class="card">’;
+html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">’;
+html+=’<div class="lbl" style="margin-bottom:0">’+S.results.length+’ Games — ‘+S.date+’</div>’;
+html+=’<button onclick="autoFillKalshi()" id="kalshi-btn" style="padding:6px 14px;border-radius:6px;border:1px solid #3a5a3a;background:rgba(90,186,138,0.1);color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:1px">⚡ Auto-fill Kalshi Odds</button>’;
+html+=’</div>’;
+var sorted=S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;});
+sorted.forEach(function(r,i) {
+var edge=S.bookOdds[r.gamePk]?calcEdge(r.winnerP,S.bookOdds[r.gamePk]):null;
+var edgeStr=edge!==null?’<span style="font-size:10px;font-weight:700;font-family:monospace;color:'+(edge>=0.05?'#5aba8a':edge>=0.02?'#8aba5a':edge>=0?'#c0c060':'#c06060')+'">’+(edge>=0?’+’:’’)+(edge*100).toFixed(1)+’%</span>’:’’;
+html+=’<div class="game-row" id="game-row-'+i+'">’;
+html+=’<div onclick="viewGame('+i+')">’;
+html+=’<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">’;
+html+=’<div style="flex:1"><span style="font-size:13px;font-weight:700;color:#e0b040">’+r.winner+’</span><span style="font-size:11px;color:#6a5a3a;margin:0 6px">def.</span><span style="font-size:13px;color:#555">’+(r.winner===r.aName?r.bName:r.aName)+’</span></div>’;
+html+=’<div style="display:flex;gap:8px;align-items:center"><span style="font-size:12px;font-family:monospace;color:'+(r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';font-weight:700">’+r.winnerML+’</span><span style="font-size:11px;color:#c8b890">’+(r.winnerP*100).toFixed(0)+’%</span><span style="font-size:10px;font-weight:700;color:'+confCol(r.confidence)+'">’+r.confidence+’</span></div>’;
+html+=’</div><div style="margin-top:3px;font-size:10px;color:#6a5a3a">’+r.time+’ · O/U ‘+r.ou+’</div></div>’;
+html+=’<div style="display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">’;
+html+=’<span style="font-size:9px;color:#2e2416;white-space:nowrap">Book ML:</span>’;
+html+=’<input type="text" placeholder="+110" value="'+(S.bookOdds[r.gamePk]||'')+'" data-gpk="'+r.gamePk+'" onclick="event.stopPropagation()" oninput="setBookOdd(this)" style="width:64px;border-color:'+(S.bookOdds[r.gamePk]?'#3a5a3a':'#2e2416')+';color:'+(S.bookOdds[r.gamePk]?'#5aba8a':'#6a5a3a')+';font-size:11px;padding:3px 6px;text-align:center">’;
+html+=edgeStr+’</div></div>’;
+});
+html+=’</div>’;
+}
+document.getElementById(‘tab0’).innerHTML=html;
+document.getElementById(‘date-input’).onchange=function(){set(‘date’,this.value);S.results=[];S.parlays=null;renderBoard();};
+document.getElementById(‘bankroll-input’).onchange=function(){set(‘bankroll’,parseFloat(this.value)||1000);};
+var btn=document.getElementById(‘analyze-btn’);
+if(btn) btn.onclick=doAnalyze;
 }
 
 function setBookOdd(el) {
-  var gpk=el.getAttribute('data-gpk');
-  S.bookOdds[gpk]=el.value;
-  lsSet('dm-bookodds',S.bookOdds);
+var gpk=el.getAttribute(‘data-gpk’);
+S.bookOdds[gpk]=el.value;
+lsSet(‘dm-bookodds’,S.bookOdds);
 }
 
 function viewGame(i) {
-  var sorted=S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;});
-  S.detail=sorted[i];
-  showTab(1);
+var sorted=S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;});
+S.detail=sorted[i];
+showTab(1);
 }
 
 function doAnalyze() {
-  S.loading=true;S.error='';S.results=[];S.parlays=null;S.progress='Loading schedule...';renderBoard();
-  fetchGames(S.date).then(function(gameList) {
-    if(!gameList.length){S.error='No games found for '+S.date;S.loading=false;renderBoard();return;}
-    S.progress='Analyzing '+gameList.length+' games...';renderBoard();
-    var analyzed=[],i=0;
-    function next() {
-      if(i>=gameList.length){S.loading=false;S.results=analyzed;S.parlays=buildParlays(analyzed,S.bookOdds,S.minEdge);renderBoard();return;}
-      var batch=gameList.slice(i,i+3);i+=3;
-      S.progress='Analyzed '+Math.min(i,gameList.length)+' / '+gameList.length+'...';renderBoard();
-      Promise.allSettled(batch.map(function(g){return analyzeGame(g,S.date);})).then(function(res) {
-        res.forEach(function(r){if(r.status==='fulfilled')analyzed.push(r.value);});
-        next();
-      });
-    }
-    next();
-  }).catch(function(e){S.error='Error: '+e.message;S.loading=false;renderBoard();});
+S.loading=true;S.error=’’;S.results=[];S.parlays=null;S.progress=‘Loading schedule…’;renderBoard();
+fetchGames(S.date).then(function(gameList) {
+if(!gameList.length){S.error=’No games found for ’+S.date;S.loading=false;renderBoard();return;}
+S.progress=‘Analyzing ‘+gameList.length+’ games…’;renderBoard();
+var analyzed=[],i=0;
+function next() {
+if(i>=gameList.length){S.loading=false;S.results=analyzed;S.parlays=buildParlays(analyzed,S.bookOdds,S.minEdge);renderBoard();return;}
+var batch=gameList.slice(i,i+3);i+=3;
+S.progress=‘Analyzed ‘+Math.min(i,gameList.length)+’ / ‘+gameList.length+’…’;renderBoard();
+Promise.allSettled(batch.map(function(g){return analyzeGame(g,S.date);})).then(function(res) {
+res.forEach(function(r){if(r.status===‘fulfilled’)analyzed.push(r.value);});
+next();
+});
+}
+next();
+}).catch(function(e){S.error=’Error: ’+e.message;S.loading=false;renderBoard();});
 }
 
 // ── TAB 1: GAME DETAIL ────────────────────────────────────────────────────────
 function renderDetail() {
-  var r=S.detail;
-  if(!r){document.getElementById('tab1').innerHTML='<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🔍</div><div style="color:#6a5a3a">Select a game from Daily Board.</div></div>';return;}
-  var bookML=S.bookOdds[r.gamePk]||null;
-  var effectiveML=bookML||r.winnerML;
-  var edge=bookML?calcEdge(r.winnerP,bookML):null;
-  // Kelly needs real book odds — without them, model ML = fair price = ~0 edge
-  var k=bookML?kelly(r.winnerP,bookML)*100:0;
-  var stake=bookML?(k/100*S.bankroll).toFixed(2):'—';
-  var win=bookML?((mlToDecimal(bookML)-1)*(k/100*S.bankroll)).toFixed(2):'—';
-  var html='';
-  if(r.venue||r.weather) {
-    html+='<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.02);border:1px solid #252015;border-radius:8px;display:flex;gap:12px;flex-wrap:wrap">';
-    if(r.venue) html+='<span style="font-size:11px;color:#6a5a3a">🏟 '+r.venue+'</span>';
-    if(r.weather) html+='<span style="font-size:11px;color:#3a4a2a">🌡 '+r.weather+'</span>';
-    html+='<span style="font-size:11px;color:#2a3a2a">Park '+r.parkB+'</span></div>';
-  }
-  html+='<div class="card">';
-  html+='<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:18px">';
-  html+='<div><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.aName?'#e0b040':'#555')+'">'+r.aName+'</div><div style="font-size:9px;color:'+(r.winner===r.aName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">'+(r.winner===r.aName?'PREDICTED WINNER':'UNDERDOG')+'</div><div style="font-size:10px;color:#4a3a1a;margin-top:3px">SP: '+r.aPitcher+'</div></div>';
-  html+='<div style="text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:4px">VS</div><div style="font-size:12px;color:#555;font-family:monospace;margin-top:3px">'+r.projScore+'</div></div>';
-  html+='<div style="text-align:right"><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.bName?'#e0b040':'#555')+'">'+r.bName+'</div><div style="font-size:9px;color:'+(r.winner===r.bName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">'+(r.winner===r.bName?'PREDICTED WINNER':'UNDERDOG')+'</div><div style="font-size:10px;color:#3a3a4a;margin-top:3px">SP: '+r.bPitcher+'</div></div>';
-  html+='</div>'+winBar(r.pctA,r.pctB)+'</div>';
-  html+='<div class="card"><div class="lbl">Full-Game Pitching</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+pitchCard(r.aName,r.aBlend,r.aPitcher)+pitchCard(r.bName,r.bBlend,r.bPitcher)+'</div></div>';
-  html+='<div class="chips">';
-  html+='<div class="chip '+(r.winner===r.aName?'gold':'')+'"><div class="cl">'+r.aName.split(' ').pop()+' ML</div><div class="cv">'+r.mlA+'</div></div>';
-  html+='<div class="chip '+(r.winner===r.bName?'gold':'')+'"><div class="cl">'+r.bName.split(' ').pop()+' ML</div><div class="cv">'+r.mlB+'</div></div>';
-  html+='<div class="chip"><div class="cl">O/U</div><div class="cv">'+r.ou+'</div></div>';
-  html+='<div class="chip '+(r.confidence==='High'?'gold':'')+'"><div class="cl">Confidence</div><div class="cv">'+r.confidence+'</div></div>';
-  html+='</div>';
-  html+='<div class="card"><div class="lbl">Factor Breakdown</div>';
-  r.factors.forEach(function(f){html+=factorRow(f);});
-  html+='<div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#444"><span>■ <span style="color:#c8922a">'+r.aName+' edge</span></span><span>■ <span style="color:#3a6a9a">'+r.bName+' edge</span></span></div></div>';
-  html+='<div class="card"><div class="lbl" style="color:#5aba8a">Kelly Stake</div>';
-  if(!bookML){
-    html+='<div style="background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px;padding:14px;text-align:center"><div style="font-size:13px;color:#6a5a3a;margin-bottom:6px">Enter Book ML to calculate stake</div><div style="font-size:11px;color:#2e2416;line-height:1.6">Go to Daily Board → find this game → type the sportsbook moneyline for '+r.winner+' into the Book ML field. The app will calculate your edge and optimal bet size.</div></div>';
-  } else {
-    html+='<div class="kelly-grid">';
-    html+='<div class="kelly-box" style="background:rgba(58,138,90,.06);border:1px solid #3a8a5a"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Recommended</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#5aba8a">$'+stake+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+k.toFixed(1)+'% of $'+S.bankroll+'</div>'+(edge!==null?'<div style="margin-top:4px">'+edgeBadge(edge)+'</div>':'')+'</div>';
-    html+='<div class="kelly-box" style="background:rgba(255,255,255,.02);border:1px solid #2e2416"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">If Win</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#c8922a">+$'+win+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+r.winner+' · '+bookML+' (book)</div><div style="font-size:10px;color:#2e2416;margin-top:1px">'+(r.winnerP*100).toFixed(1)+'% model</div></div>';
-    html+='</div>';
-  }
-  html+='</div>';
-  document.getElementById('tab1').innerHTML=html;
+var r=S.detail;
+if(!r){document.getElementById(‘tab1’).innerHTML=’<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🔍</div><div style="color:#6a5a3a">Select a game from Daily Board.</div></div>’;return;}
+var bookML=S.bookOdds[r.gamePk]||null;
+var effectiveML=bookML||r.winnerML;
+var edge=bookML?calcEdge(r.winnerP,bookML):null;
+// Kelly needs real book odds — without them, model ML = fair price = ~0 edge
+var k=bookML?kelly(r.winnerP,bookML)*100:0;
+var stake=bookML?(k/100*S.bankroll).toFixed(2):’—’;
+var win=bookML?((mlToDecimal(bookML)-1)*(k/100*S.bankroll)).toFixed(2):’—’;
+var html=’’;
+if(r.venue||r.weather) {
+html+=’<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.02);border:1px solid #252015;border-radius:8px;display:flex;gap:12px;flex-wrap:wrap">’;
+if(r.venue) html+=’<span style="font-size:11px;color:#6a5a3a">🏟 ‘+r.venue+’</span>’;
+if(r.weather) html+=’<span style="font-size:11px;color:#3a4a2a">🌡 ‘+r.weather+’</span>’;
+html+=’<span style="font-size:11px;color:#2a3a2a">Park ‘+r.parkB+’</span></div>’;
+}
+html+=’<div class="card">’;
+html+=’<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:18px">’;
+html+=’<div><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.aName?'#e0b040':'#555')+'">’+r.aName+’</div><div style="font-size:9px;color:'+(r.winner===r.aName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">’+(r.winner===r.aName?‘PREDICTED WINNER’:‘UNDERDOG’)+’</div><div style="font-size:10px;color:#4a3a1a;margin-top:3px">SP: ‘+r.aPitcher+’</div></div>’;
+html+=’<div style="text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:4px">VS</div><div style="font-size:12px;color:#555;font-family:monospace;margin-top:3px">’+r.projScore+’</div></div>’;
+html+=’<div style="text-align:right"><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.bName?'#e0b040':'#555')+'">’+r.bName+’</div><div style="font-size:9px;color:'+(r.winner===r.bName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">’+(r.winner===r.bName?‘PREDICTED WINNER’:‘UNDERDOG’)+’</div><div style="font-size:10px;color:#3a3a4a;margin-top:3px">SP: ‘+r.bPitcher+’</div></div>’;
+html+=’</div>’+winBar(r.pctA,r.pctB)+’</div>’;
+html+=’<div class="card"><div class="lbl">Full-Game Pitching</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">’+pitchCard(r.aName,r.aBlend,r.aPitcher)+pitchCard(r.bName,r.bBlend,r.bPitcher)+’</div></div>’;
+html+=’<div class="chips">’;
+html+=’<div class="chip '+(r.winner===r.aName?'gold':'')+'"><div class="cl">’+r.aName.split(’ ‘).pop()+’ ML</div><div class="cv">’+r.mlA+’</div></div>’;
+html+=’<div class="chip '+(r.winner===r.bName?'gold':'')+'"><div class="cl">’+r.bName.split(’ ‘).pop()+’ ML</div><div class="cv">’+r.mlB+’</div></div>’;
+html+=’<div class="chip"><div class="cl">O/U</div><div class="cv">’+r.ou+’</div></div>’;
+html+=’<div class="chip '+(r.confidence==='High'?'gold':'')+'"><div class="cl">Confidence</div><div class="cv">’+r.confidence+’</div></div>’;
+html+=’</div>’;
+html+=’<div class="card"><div class="lbl">Factor Breakdown</div>’;
+r.factors.forEach(function(f){html+=factorRow(f);});
+html+=’<div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#444"><span>■ <span style="color:#c8922a">’+r.aName+’ edge</span></span><span>■ <span style="color:#3a6a9a">’+r.bName+’ edge</span></span></div></div>’;
+html+=’<div class="card"><div class="lbl" style="color:#5aba8a">Kelly Stake</div>’;
+if(!bookML){
+html+=’<div style="background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px;padding:14px;text-align:center"><div style="font-size:13px;color:#6a5a3a;margin-bottom:6px">Enter Book ML to calculate stake</div><div style="font-size:11px;color:#2e2416;line-height:1.6">Go to Daily Board → find this game → type the sportsbook moneyline for ‘+r.winner+’ into the Book ML field. The app will calculate your edge and optimal bet size.</div></div>’;
+} else {
+html+=’<div class="kelly-grid">’;
+html+=’<div class="kelly-box" style="background:rgba(58,138,90,.06);border:1px solid #3a8a5a"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Recommended</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#5aba8a">$’+stake+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+k.toFixed(1)+’% of $’+S.bankroll+’</div>’+(edge!==null?’<div style="margin-top:4px">’+edgeBadge(edge)+’</div>’:’’)+’</div>’;
+html+=’<div class="kelly-box" style="background:rgba(255,255,255,.02);border:1px solid #2e2416"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">If Win</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#c8922a">+$’+win+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+r.winner+’ · ‘+bookML+’ (book)</div><div style="font-size:10px;color:#2e2416;margin-top:1px">’+(r.winnerP*100).toFixed(1)+’% model</div></div>’;
+html+=’</div>’;
+}
+html+=’</div>’;
+document.getElementById(‘tab1’).innerHTML=html;
 }
 
 // ── TAB 2: BEST PLAYS ─────────────────────────────────────────────────────────
 function renderPlays() {
-  var html='<div class="card" style="margin-bottom:14px"><div class="lbl" style="color:#5aba8a">Value Filter</div>';
-  html+='<div style="font-size:11px;color:#4a5a3a;line-height:1.7;margin-bottom:10px">Enter book odds in Daily Board. Only plays where model probability beats book implied probability are shown.</div>';
-  html+='<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:4px">MIN EDGE</div><div style="display:flex;gap:6px">';
-  [1,2,3,5].forEach(function(pct){html+='<button class="edge-btn '+(S.minEdge===pct?'active':'')+'" onclick="setMinEdge('+pct+')">'+pct+'%+</button>';});
-  html+='</div></div><button class="secondary" onclick="rebuildPlays()">Rebuild</button></div>';
-  if(S.parlays) html+='<div style="margin-top:8px;font-size:10px;color:#2e2416">'+(Object.values(S.bookOdds).filter(Boolean).length>0?Object.values(S.bookOdds).filter(Boolean).length+' book lines · '+S.parlays.edgeFiltered+' pass filter':'No book odds entered — showing all High/Medium plays.')+'</div>';
-  html+='</div>';
-  if(!S.parlays){
-    html+='<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🎯</div><div style="color:#6a5a3a;margin-bottom:16px">Run Analyze All Games first.</div><button class="primary" onclick="showTab(0)">Go to Daily Board</button></div>';
-  } else {
-    if(S.parlays.singles.length) {
-      html+='<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Best Singles</div>';
-      S.parlays.singles.forEach(function(p,i){html+=parlayCardHTML(p,'single-'+i);});
-    }
-    if(S.parlays.parlays2.length) {
-      html+='<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">2-Leg Parlays</div>';
-      S.parlays.parlays2.forEach(function(p,i){html+=parlayCardHTML(p,'p2-'+i);});
-    }
-    if(S.parlays.parlays3.length) {
-      html+='<div style="font-size:10px;letter-spacing:3px;color:#9a5ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">3-Leg Parlay</div>';
-      S.parlays.parlays3.forEach(function(p,i){html+=parlayCardHTML(p,'p3-'+i);});
-    }
-    if(!S.parlays.singles.length) html+='<div class="card" style="text-align:center;padding:24px"><div style="color:#6a5a3a">No qualifying plays. Lower edge threshold or enter book odds.</div></div>';
-    html+='<div style="margin-top:20px;padding:12px 14px;background:rgba(138,58,58,.06);border:1px solid #3a1a1a;border-radius:8px"><div style="font-size:10px;color:#6a3a3a;line-height:1.7">For entertainment only. Not financial advice.</div></div>';
-  }
-  document.getElementById('tab2').innerHTML=html;
+var html=’<div class="card" style="margin-bottom:14px"><div class="lbl" style="color:#5aba8a">Value Filter</div>’;
+html+=’<div style="font-size:11px;color:#4a5a3a;line-height:1.7;margin-bottom:10px">Enter book odds in Daily Board. Only plays where model probability beats book implied probability are shown.</div>’;
+html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:4px">MIN EDGE</div><div style="display:flex;gap:6px">’;
+[1,2,3,5].forEach(function(pct){html+=’<button class="edge-btn '+(S.minEdge===pct?'active':'')+'" onclick="setMinEdge('+pct+')">’+pct+’%+</button>’;});
+html+=’</div></div><button class="secondary" onclick="rebuildPlays()">Rebuild</button></div>’;
+if(S.parlays) html+=’<div style="margin-top:8px;font-size:10px;color:#2e2416">’+(Object.values(S.bookOdds).filter(Boolean).length>0?Object.values(S.bookOdds).filter(Boolean).length+’ book lines · ‘+S.parlays.edgeFiltered+’ pass filter’:‘No book odds entered — showing all High/Medium plays.’)+’</div>’;
+html+=’</div>’;
+if(!S.parlays){
+html+=’<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🎯</div><div style="color:#6a5a3a;margin-bottom:16px">Run Analyze All Games first.</div><button class="primary" onclick="showTab(0)">Go to Daily Board</button></div>’;
+} else {
+if(S.parlays.singles.length) {
+html+=’<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Best Singles</div>’;
+S.parlays.singles.forEach(function(p,i){html+=parlayCardHTML(p,‘single-’+i);});
+}
+if(S.parlays.parlays2.length) {
+html+=’<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">2-Leg Parlays</div>’;
+S.parlays.parlays2.forEach(function(p,i){html+=parlayCardHTML(p,‘p2-’+i);});
+}
+if(S.parlays.parlays3.length) {
+html+=’<div style="font-size:10px;letter-spacing:3px;color:#9a5ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">3-Leg Parlay</div>’;
+S.parlays.parlays3.forEach(function(p,i){html+=parlayCardHTML(p,‘p3-’+i);});
+}
+if(!S.parlays.singles.length) html+=’<div class="card" style="text-align:center;padding:24px"><div style="color:#6a5a3a">No qualifying plays. Lower edge threshold or enter book odds.</div></div>’;
+html+=’<div style="margin-top:20px;padding:12px 14px;background:rgba(138,58,58,.06);border:1px solid #3a1a1a;border-radius:8px"><div style="font-size:10px;color:#6a3a3a;line-height:1.7">For entertainment only. Not financial advice.</div></div>’;
+}
+document.getElementById(‘tab2’).innerHTML=html;
 }
 
 function parlayCardHTML(play,id) {
-  var typeCol=play.legs.length===1?'#c8922a':play.legs.length===2?'#5a9ac0':'#9a5ac0';
-  var stake=((play.kellyPct/100)*S.bankroll).toFixed(2);
-  var winAmt=((play.payout-1)*parseFloat(stake)).toFixed(2);
-  var confLabel=play.combinedP>=0.65?'High':play.combinedP>=0.57?'Medium':'Low';
-  var confCol2=play.combinedP>=0.65?'#c8922a':play.combinedP>=0.57?'#8a8a3a':'#6a5a3a';
-  var edgeVal=play.combinedEdge!==null&&play.combinedEdge!==undefined?play.combinedEdge:(play.legs[0]?play.legs[0].edge:null);
-  var html='<div class="parlay-card" style="border:1px solid '+typeCol+';background:rgba(255,255,255,.02)">';
-  html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">';
-  html+='<span style="font-size:11px;font-weight:700;color:'+typeCol+';letter-spacing:2px;text-transform:uppercase">'+play.type+'</span>';
-  html+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+edgeBadge(edgeVal)+'<span style="font-size:11px;color:'+confCol2+';font-weight:700">'+confLabel+'</span><span style="font-size:11px;color:#6a5a3a;font-family:monospace">'+(play.combinedP*100).toFixed(1)+'%</span></div></div>';
-  play.legs.forEach(function(leg,li) {
-    var legEdge=leg.edge!==null&&leg.edge!==undefined?'<div style="font-size:11px;font-weight:700;color:'+(leg.edge>=0.03?'#5aba8a':'#c0c060')+'">'+(leg.edge>=0?'+':'')+(leg.edge*100).toFixed(1)+'%</div>':'';
-    html+='<div class="parlay-leg" onclick="viewLeg(\''+id+'\','+li+')">';
-    html+='<div><div style="font-size:13px;font-weight:700;color:#e0b040">'+leg.winner+'</div><div style="font-size:10px;color:#6a5a3a">'+(leg.winner===leg.aName?'Away':'Home')+' · '+leg.time+'</div><div style="font-size:10px;color:#4a4a2a">vs '+(leg.winner===leg.aName?leg.bName:leg.aName)+'</div></div>';
-    html+='<div style="text-align:right">'+(leg.bookML?'<div style="font-size:12px;font-weight:900;font-family:monospace;color:'+(leg.bookML[0]==='+'?'#5aba8a':'#c8b890')+'">'+leg.bookML+' <span style="font-size:9px;color:#2e2416">book</span></div>':'')+'<div style="font-size:11px;font-family:monospace;color:#6a5a3a">'+leg.winnerML+' <span style="font-size:9px;color:#2e2416">model</span></div>'+legEdge+'</div></div>';
-  });
-  html+='<div style="margin-top:10px;padding:10px 12px;background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center">';
-  [['Kelly %',play.kellyPct.toFixed(1)+'%',false],['Stake','$'+stake,false],['Payout',play.payout.toFixed(2)+'x',false],['Net Win','$'+winAmt,true]].forEach(function(item){
-    html+='<div><div style="font-size:9px;color:#2e2416;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">'+item[0]+'</div><div style="font-size:13px;font-weight:900;font-family:monospace;color:'+(item[2]?'#5aba8a':'#c8b890')+'">'+item[1]+'</div></div>';
-  });
-  html+='</div>';
-  if(play.legs.length>1) html+='<div style="margin-top:8px;font-size:10px;color:#2e2416;text-align:center">Win prob = '+play.legs.map(function(l){return (l.winnerP*100).toFixed(0)+'%';}).join(' x ')+' = '+(play.combinedP*100).toFixed(1)+'%</div>';
-  html+='</div></div>';
-  return html;
+var typeCol=play.legs.length===1?’#c8922a’:play.legs.length===2?’#5a9ac0’:’#9a5ac0’;
+var stake=((play.kellyPct/100)*S.bankroll).toFixed(2);
+var winAmt=((play.payout-1)*parseFloat(stake)).toFixed(2);
+var confLabel=play.combinedP>=0.65?‘High’:play.combinedP>=0.57?‘Medium’:‘Low’;
+var confCol2=play.combinedP>=0.65?’#c8922a’:play.combinedP>=0.57?’#8a8a3a’:’#6a5a3a’;
+var edgeVal=play.combinedEdge!==null&&play.combinedEdge!==undefined?play.combinedEdge:(play.legs[0]?play.legs[0].edge:null);
+var html=’<div class="parlay-card" style="border:1px solid '+typeCol+';background:rgba(255,255,255,.02)">’;
+html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">’;
+html+=’<span style="font-size:11px;font-weight:700;color:'+typeCol+';letter-spacing:2px;text-transform:uppercase">’+play.type+’</span>’;
+html+=’<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">’+edgeBadge(edgeVal)+’<span style="font-size:11px;color:'+confCol2+';font-weight:700">’+confLabel+’</span><span style="font-size:11px;color:#6a5a3a;font-family:monospace">’+(play.combinedP*100).toFixed(1)+’%</span></div></div>’;
+play.legs.forEach(function(leg,li) {
+var legEdge=leg.edge!==null&&leg.edge!==undefined?’<div style="font-size:11px;font-weight:700;color:'+(leg.edge>=0.03?'#5aba8a':'#c0c060')+'">’+(leg.edge>=0?’+’:’’)+(leg.edge*100).toFixed(1)+’%</div>’:’’;
+html+=’<div class="parlay-leg" onclick="viewLeg(\''+id+'\','+li+')">’;
+html+=’<div><div style="font-size:13px;font-weight:700;color:#e0b040">’+leg.winner+’</div><div style="font-size:10px;color:#6a5a3a">’+(leg.winner===leg.aName?‘Away’:‘Home’)+’ · ‘+leg.time+’</div><div style="font-size:10px;color:#4a4a2a">vs ‘+(leg.winner===leg.aName?leg.bName:leg.aName)+’</div></div>’;
+html+=’<div style="text-align:right">’+(leg.bookML?’<div style="font-size:12px;font-weight:900;font-family:monospace;color:'+(leg.bookML[0]==='+'?'#5aba8a':'#c8b890')+'">’+leg.bookML+’ <span style="font-size:9px;color:#2e2416">book</span></div>’:’’)+’<div style="font-size:11px;font-family:monospace;color:#6a5a3a">’+leg.winnerML+’ <span style="font-size:9px;color:#2e2416">model</span></div>’+legEdge+’</div></div>’;
+});
+html+=’<div style="margin-top:10px;padding:10px 12px;background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center">’;
+[[‘Kelly %’,play.kellyPct.toFixed(1)+’%’,false],[‘Stake’,’$’+stake,false],[‘Payout’,play.payout.toFixed(2)+‘x’,false],[‘Net Win’,’$’+winAmt,true]].forEach(function(item){
+html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">’+item[0]+’</div><div style="font-size:13px;font-weight:900;font-family:monospace;color:'+(item[2]?'#5aba8a':'#c8b890')+'">’+item[1]+’</div></div>’;
+});
+html+=’</div>’;
+if(play.legs.length>1) html+=’<div style="margin-top:8px;font-size:10px;color:#2e2416;text-align:center">Win prob = ‘+play.legs.map(function(l){return (l.winnerP*100).toFixed(0)+’%’;}).join(’ x ‘)+’ = ’+(play.combinedP*100).toFixed(1)+’%</div>’;
+html+=’</div></div>’;
+return html;
 }
 
 // Store parlay data for click through
 var parlayStore={};
 function renderPlaysWithStore() {
-  parlayStore={};
-  if(S.parlays){
-    S.parlays.singles.forEach(function(p,i){parlayStore['single-'+i]=p;});
-    S.parlays.parlays2.forEach(function(p,i){parlayStore['p2-'+i]=p;});
-    S.parlays.parlays3.forEach(function(p,i){parlayStore['p3-'+i]=p;});
-  }
-  renderPlays();
+parlayStore={};
+if(S.parlays){
+S.parlays.singles.forEach(function(p,i){parlayStore[‘single-’+i]=p;});
+S.parlays.parlays2.forEach(function(p,i){parlayStore[‘p2-’+i]=p;});
+S.parlays.parlays3.forEach(function(p,i){parlayStore[‘p3-’+i]=p;});
+}
+renderPlays();
 }
 function viewLeg(playId,legIdx) {
-  var play=S.parlays&&(S.parlays.singles.concat(S.parlays.parlays2).concat(S.parlays.parlays3)).find(function(p,i){
-    return (p.type==='Single'&&'single-'+S.parlays.singles.indexOf(p)===playId)||(p.type==='2-Leg Parlay'&&'p2-'+S.parlays.parlays2.indexOf(p)===playId)||(p.type==='3-Leg Parlay'&&'p3-'+S.parlays.parlays3.indexOf(p)===playId);
-  });
-  // Find by result gamePk in S.results
-  var legs=[];
-  if(S.parlays){
-    var allPlays=S.parlays.singles.concat(S.parlays.parlays2).concat(S.parlays.parlays3);
-    // Simplified: just view the game from results
-  }
+var play=S.parlays&&(S.parlays.singles.concat(S.parlays.parlays2).concat(S.parlays.parlays3)).find(function(p,i){
+return (p.type===‘Single’&&‘single-’+S.parlays.singles.indexOf(p)===playId)||(p.type===‘2-Leg Parlay’&&‘p2-’+S.parlays.parlays2.indexOf(p)===playId)||(p.type===‘3-Leg Parlay’&&‘p3-’+S.parlays.parlays3.indexOf(p)===playId);
+});
+// Find by result gamePk in S.results
+var legs=[];
+if(S.parlays){
+var allPlays=S.parlays.singles.concat(S.parlays.parlays2).concat(S.parlays.parlays3);
+// Simplified: just view the game from results
+}
 }
 
-function setMinEdge(n){set('minEdge',n);renderPlays();}
+function setMinEdge(n){set(‘minEdge’,n);renderPlays();}
 function rebuildPlays(){if(S.results.length)S.parlays=buildParlays(S.results,S.bookOdds,S.minEdge);renderPlays();}
 
 // ── TAB 3: SEASON RECORD ──────────────────────────────────────────────────────
 function renderBacktest() {
-  var html='<div class="card" style="margin-bottom:14px"><div class="lbl">Backtest Range</div>';
-  html+='<div style="font-size:10px;color:#4a4a2a;margin-bottom:10px;line-height:1.6">Uses current season stats for all dates.</div>';
-  html+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">';
-  html+='<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">FROM</div><input type="date" id="bt-start" value="'+S.btStart+'" style="width:100%;font-size:13px"></div>';
-  html+='<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">TO</div><input type="date" id="bt-end" value="'+S.btEnd+'" style="width:100%;font-size:13px"></div>';
-  html+='<button class="primary" id="bt-btn" '+(S.btLoading?'disabled':'')+'>'+( S.btLoading?'<span class="spin"></span>Running...':'Run Backtest')+'</button>';
-  html+='</div>';
-  if(S.btLoading) html+='<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>'+S.btProgress+'</div>';
-  html+='</div>';
-  if(S.btError) html+='<div class="error-box">'+S.btError+'</div>';
-  if(S.btResults) {
-    var bt=S.btResults;
-    html+='<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Individual Game Accuracy</div>';
-    html+='<div class="card"><div class="lbl">Win Rate by Confidence</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
-    [['Overall',bt.all,'#c8b890'],['High',bt.high,'#c8922a'],['Medium',bt.medium,'#8a8a3a'],['Low',bt.low,'#6a5a3a']].forEach(function(item){
-      html+='<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:8px;padding:10px 6px;text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">'+item[0]+'</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+item[2]+'">'+(item[1].pct!==null?item[1].pct+'%':'—')+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+item[1].w+'-'+item[1].l+'</div></div>';
-    });
-    html+='</div><div class="lbl">Calibration</div>';
-    bt.calibration.forEach(function(b) {
-      if(!b.games) return;
-      var actual=parseFloat(b.actualPct),mid=(parseFloat(b.lo.toFixed(2))*1+parseFloat((Math.min(b.hi,0.75)).toFixed(2))*1)/2*100,diff=actual-mid;
-      var col=Math.abs(diff)<5?'#5aba8a':Math.abs(diff)<10?'#8a8a3a':'#c06060';
-      html+='<div class="cal-row"><span style="font-size:10px;color:#6a5a3a;width:55px;flex-shrink:0">'+b.label+'</span><span style="font-size:10px;color:#2e2416;width:48px;flex-shrink:0">'+b.games+' games</span><div style="flex:1;height:5px;background:#2e2416;border-radius:2px;overflow:hidden"><div style="height:100%;width:'+(b.actualPct||0)+'%;background:#5a9ac0;border-radius:2px"></div></div><span style="font-size:11px;font-family:monospace;color:#5a9ac0;width:38px;text-align:right;flex-shrink:0">'+b.actualPct+'%</span><span style="font-size:10px;font-family:monospace;color:'+col+';width:40px;text-align:right;flex-shrink:0">'+(diff>0?'+':'')+diff.toFixed(1)+'</span></div>';
-    });
-    html+='</div>';
-    html+='<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px;margin-top:4px">Day-by-Day Parlay Record</div>';
-    html+='<div class="card" style="margin-bottom:12px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">';
-    [['Single',bt.p1Record,'#c8922a',bt.p1Roi],['2-Leg',bt.p2Record,'#5a9ac0',bt.p2Roi],['3-Leg',bt.p3Record,'#9a5ac0',bt.p3Roi]].forEach(function(item){
-      html+='<div style="background:rgba(255,255,255,.02);border:1px solid '+item[2]+'44;border-radius:8px;padding:10px 8px;text-align:center"><div style="font-size:9px;color:'+item[2]+';letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">'+item[0]+'</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(item[1].pct!==null&&parseFloat(item[1].pct)>50?'#5aba8a':'#c06060')+'">'+(item[1].pct!==null?item[1].pct+'%':'—')+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+item[1].w+'-'+item[1].l+'</div><div style="font-size:10px;font-family:monospace;color:'+(parseFloat(item[3])>=0?'#5aba8a':'#c06060')+';margin-top:4px">ROI '+item[3]+'%</div></div>';
-    });
-    html+='</div><div class="lbl">Parlay Log</div><div style="max-height:360px;overflow-y:auto">';
-    bt.parlayDays.slice().reverse().forEach(function(day) {
-      html+='<div class="parlay-day"><div style="font-size:10px;color:#6a5a3a;font-family:monospace;margin-bottom:6px;font-weight:700">'+day.date+'</div>';
-      [['single','1-Leg','#c8922a'],['parlay2','2-Leg','#5a9ac0'],['parlay3','3-Leg','#9a5ac0']].forEach(function(item) {
-        var p=day[item[0]]; if(!p) return;
-        html+='<div class="day-leg" style="background:'+(p.hit?'rgba(58,138,90,.07)':'rgba(138,58,58,.07)')+';border:1px solid '+(p.hit?'#1a3a2a':'#3a1a1a')+'"><span style="font-size:9px;font-weight:700;color:'+item[2]+';width:32px;flex-shrink:0">'+item[1]+'</span><span style="font-size:10px;color:'+(p.hit?'#e0b040':'#777')+';flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.label+'</span><span style="font-size:10px;color:'+(p.hit?'#5aba8a':'#c06060')+';flex-shrink:0">'+(p.hit?'HIT':'MISS')+'</span></div>';
-      });
-      html+='</div>';
-    });
-    html+='</div></div>';
-    html+='<div class="card"><div class="lbl">Game Log ('+bt.bets.length+' games)</div><div style="max-height:300px;overflow-y:auto">';
-    bt.bets.slice().reverse().forEach(function(r) {
-      html+='<div class="bt-row" style="background:'+(r.correct?'rgba(58,138,90,.06)':'rgba(138,58,58,.06)')+';border:1px solid '+(r.correct?'#1a3a2a':'#3a1a1a')+'"><span style="font-size:9px;color:#2e2416;width:70px;flex-shrink:0;font-family:monospace">'+r.date+'</span><span style="font-size:10px;color:'+(r.correct?'#e0b040':'#888')+';flex:1;font-weight:'+(r.correct?700:400)+'">'+r.winner+'</span><span style="font-size:9px;color:'+(r.correct?'#3a6a3a':'#6a3a3a')+';flex-shrink:0">'+(r.correct?'✓':'✗')+' '+(r.actualWinner?r.actualWinner.split(' ').pop():'')+'</span><span style="font-size:10px;font-family:monospace;color:'+(r.winnerML&&r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';width:40px;text-align:right;flex-shrink:0">'+r.winnerML+'</span><span style="font-size:9px;color:'+confCol(r.confidence)+';width:34px;text-align:right;flex-shrink:0">'+r.confidence+'</span></div>';
-    });
-    html+='</div></div>';
-  }
-  document.getElementById('tab3').innerHTML=html;
-  var bsEl=document.getElementById('bt-start');
-  var beEl=document.getElementById('bt-end');
-  if(bsEl) bsEl.onchange=function(){set('btStart',this.value);};
-  if(beEl) beEl.onchange=function(){set('btEnd',this.value);};
-  var btBtn=document.getElementById('bt-btn');
-  if(btBtn) btBtn.onclick=doBacktest;
+var html=’<div class="card" style="margin-bottom:14px"><div class="lbl">Backtest Range</div>’;
+html+=’<div style="font-size:10px;color:#4a4a2a;margin-bottom:10px;line-height:1.6">Uses current season stats for all dates.</div>’;
+html+=’<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">’;
+html+=’<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">FROM</div><input type="date" id="bt-start" value="'+S.btStart+'" style="width:100%;font-size:13px"></div>’;
+html+=’<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">TO</div><input type="date" id="bt-end" value="'+S.btEnd+'" style="width:100%;font-size:13px"></div>’;
+html+=’<button class=“primary” id=“bt-btn” ‘+(S.btLoading?‘disabled’:’’)+’>’+( S.btLoading?’<span class="spin"></span>Running…’:‘Run Backtest’)+’</button>’;
+html+=’</div>’;
+if(S.btLoading) html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.btProgress+’</div>’;
+html+=’</div>’;
+if(S.btError) html+=’<div class="error-box">’+S.btError+’</div>’;
+if(S.btResults) {
+var bt=S.btResults;
+html+=’<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Individual Game Accuracy</div>’;
+html+=’<div class="card"><div class="lbl">Win Rate by Confidence</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">’;
+[[‘Overall’,bt.all,’#c8b890’],[‘High’,bt.high,’#c8922a’],[‘Medium’,bt.medium,’#8a8a3a’],[‘Low’,bt.low,’#6a5a3a’]].forEach(function(item){
+html+=’<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:8px;padding:10px 6px;text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">’+item[0]+’</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+item[2]+'">’+(item[1].pct!==null?item[1].pct+’%’:’—’)+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+item[1].w+’-’+item[1].l+’</div></div>’;
+});
+html+=’</div><div class="lbl">Calibration</div>’;
+bt.calibration.forEach(function(b) {
+if(!b.games) return;
+var actual=parseFloat(b.actualPct),mid=(parseFloat(b.lo.toFixed(2))*1+parseFloat((Math.min(b.hi,0.75)).toFixed(2))*1)/2*100,diff=actual-mid;
+var col=Math.abs(diff)<5?’#5aba8a’:Math.abs(diff)<10?’#8a8a3a’:’#c06060’;
+html+=’<div class="cal-row"><span style="font-size:10px;color:#6a5a3a;width:55px;flex-shrink:0">’+b.label+’</span><span style="font-size:10px;color:#2e2416;width:48px;flex-shrink:0">’+b.games+’ games</span><div style="flex:1;height:5px;background:#2e2416;border-radius:2px;overflow:hidden"><div style="height:100%;width:'+(b.actualPct||0)+'%;background:#5a9ac0;border-radius:2px"></div></div><span style="font-size:11px;font-family:monospace;color:#5a9ac0;width:38px;text-align:right;flex-shrink:0">’+b.actualPct+’%</span><span style="font-size:10px;font-family:monospace;color:'+col+';width:40px;text-align:right;flex-shrink:0">’+(diff>0?’+’:’’)+diff.toFixed(1)+’</span></div>’;
+});
+html+=’</div>’;
+html+=’<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px;margin-top:4px">Day-by-Day Parlay Record</div>’;
+html+=’<div class="card" style="margin-bottom:12px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">’;
+[[‘Single’,bt.p1Record,’#c8922a’,bt.p1Roi],[‘2-Leg’,bt.p2Record,’#5a9ac0’,bt.p2Roi],[‘3-Leg’,bt.p3Record,’#9a5ac0’,bt.p3Roi]].forEach(function(item){
+html+=’<div style="background:rgba(255,255,255,.02);border:1px solid '+item[2]+'44;border-radius:8px;padding:10px 8px;text-align:center"><div style="font-size:9px;color:'+item[2]+';letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">’+item[0]+’</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(item[1].pct!==null&&parseFloat(item[1].pct)>50?'#5aba8a':'#c06060')+'">’+(item[1].pct!==null?item[1].pct+’%’:’—’)+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+item[1].w+’-’+item[1].l+’</div><div style="font-size:10px;font-family:monospace;color:'+(parseFloat(item[3])>=0?'#5aba8a':'#c06060')+';margin-top:4px">ROI ‘+item[3]+’%</div></div>’;
+});
+html+=’</div><div class="lbl">Parlay Log</div><div style="max-height:360px;overflow-y:auto">’;
+bt.parlayDays.slice().reverse().forEach(function(day) {
+html+=’<div class="parlay-day"><div style="font-size:10px;color:#6a5a3a;font-family:monospace;margin-bottom:6px;font-weight:700">’+day.date+’</div>’;
+[[‘single’,‘1-Leg’,’#c8922a’],[‘parlay2’,‘2-Leg’,’#5a9ac0’],[‘parlay3’,‘3-Leg’,’#9a5ac0’]].forEach(function(item) {
+var p=day[item[0]]; if(!p) return;
+html+=’<div class="day-leg" style="background:'+(p.hit?'rgba(58,138,90,.07)':'rgba(138,58,58,.07)')+';border:1px solid '+(p.hit?'#1a3a2a':'#3a1a1a')+'"><span style="font-size:9px;font-weight:700;color:'+item[2]+';width:32px;flex-shrink:0">’+item[1]+’</span><span style="font-size:10px;color:'+(p.hit?'#e0b040':'#777')+';flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">’+p.label+’</span><span style="font-size:10px;color:'+(p.hit?'#5aba8a':'#c06060')+';flex-shrink:0">’+(p.hit?‘HIT’:‘MISS’)+’</span></div>’;
+});
+html+=’</div>’;
+});
+html+=’</div></div>’;
+html+=’<div class="card"><div class="lbl">Game Log (’+bt.bets.length+’ games)</div><div style="max-height:300px;overflow-y:auto">’;
+bt.bets.slice().reverse().forEach(function(r) {
+html+=’<div class="bt-row" style="background:'+(r.correct?'rgba(58,138,90,.06)':'rgba(138,58,58,.06)')+';border:1px solid '+(r.correct?'#1a3a2a':'#3a1a1a')+'"><span style="font-size:9px;color:#2e2416;width:70px;flex-shrink:0;font-family:monospace">’+r.date+’</span><span style="font-size:10px;color:'+(r.correct?'#e0b040':'#888')+';flex:1;font-weight:'+(r.correct?700:400)+'">’+r.winner+’</span><span style="font-size:9px;color:'+(r.correct?'#3a6a3a':'#6a3a3a')+';flex-shrink:0">’+(r.correct?‘✓’:‘✗’)+’ ‘+(r.actualWinner?r.actualWinner.split(’ ‘).pop():’’)+’</span><span style="font-size:10px;font-family:monospace;color:'+(r.winnerML&&r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';width:40px;text-align:right;flex-shrink:0">’+r.winnerML+’</span><span style="font-size:9px;color:'+confCol(r.confidence)+';width:34px;text-align:right;flex-shrink:0">’+r.confidence+’</span></div>’;
+});
+html+=’</div></div>’;
+}
+document.getElementById(‘tab3’).innerHTML=html;
+var bsEl=document.getElementById(‘bt-start’);
+var beEl=document.getElementById(‘bt-end’);
+if(bsEl) bsEl.onchange=function(){set(‘btStart’,this.value);};
+if(beEl) beEl.onchange=function(){set(‘btEnd’,this.value);};
+var btBtn=document.getElementById(‘bt-btn’);
+if(btBtn) btBtn.onclick=doBacktest;
 }
 
 function doBacktest() {
-  S.btLoading=true;S.btError='';S.btResults=null;
-  S.btProgress='Fetching completed games...';
-  renderBacktest();
-  var yr=S.btEnd.slice(0,4);
-  fetchCompleted(S.btStart,S.btEnd).then(function(games) {
-    if(!games.length){
-      S.btError='No games found between '+S.btStart+' and '+S.btEnd+'. Try a range within April-October.';
-      S.btLoading=false;renderBacktest();return;
-    }
-    S.btProgress='Found '+games.length+' games. Analyzing in batches...';
-    renderBacktest();
-    var analyzed=[],errors=0,i=0;
-    function next() {
-      if(i>=games.length){
-        S.btLoading=false;S.btProgress='Done! '+analyzed.length+' games analyzed.';
-        renderBacktest();
-        if(!analyzed.length){
-          setTimeout(function(){S.btProgress='';S.btError='0/'+games.length+' analyzed. Try a shorter range.';renderBacktest();},200);
-          return;
-        }
-        setTimeout(function(){
-          S.btProgress='';
-          try{
-            S.btResults=computeBacktest(analyzed,S.bankroll);
-          }catch(e){
-            S.btError='Compute error: '+e.message;
-            renderBacktest();return;
-          }
-          try{
-            renderBacktest();
-          }catch(e){
-            document.getElementById('tab3').innerHTML='<div class="error-box">Render error: '+e.message+'</div><div class="card" style="text-align:center;padding:20px;color:#6a5a3a">'+analyzed.length+' games analyzed successfully. Refresh and try again.</div>';
-          }
-        },300);
-        return;
-      }
-      var batch=games.slice(i,i+2);i+=2;
-      S.btProgress='Analyzing '+Math.min(i,games.length)+'/'+games.length+' — '+analyzed.length+' ok, '+errors+' failed';
-      renderBacktest();
-      Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res){
-        res.forEach(function(r){
-          if(r.status==='fulfilled') analyzed.push(r.value);
-          else errors++;
-        });
-        setTimeout(next,100);
-      }).catch(function(){ errors+=batch.length; setTimeout(next,100); });
-    }
-    setTimeout(next,200);
-  }).catch(function(e){
-    S.btError='Schedule fetch failed: '+e.message;
-    S.btLoading=false;renderBacktest();
-  });
+S.btLoading=true;S.btError=’’;S.btResults=null;
+S.btProgress=‘Fetching completed games…’;
+renderBacktest();
+var yr=S.btEnd.slice(0,4);
+fetchCompleted(S.btStart,S.btEnd).then(function(games) {
+if(!games.length){
+S.btError=‘No games found between ‘+S.btStart+’ and ‘+S.btEnd+’. Try a range within April-October.’;
+S.btLoading=false;renderBacktest();return;
+}
+S.btProgress=‘Found ‘+games.length+’ games. Analyzing in batches…’;
+renderBacktest();
+var analyzed=[],errors=0,i=0;
+function next() {
+if(i>=games.length){
+S.btLoading=false;S.btProgress=‘Done! ‘+analyzed.length+’ games analyzed.’;
+renderBacktest();
+if(!analyzed.length){
+setTimeout(function(){S.btProgress=’’;S.btError=‘0/’+games.length+’ analyzed. Try a shorter range.’;renderBacktest();},200);
+return;
+}
+setTimeout(function(){
+S.btProgress=’’;
+try{
+S.btResults=computeBacktest(analyzed,S.bankroll);
+}catch(e){
+S.btError=‘Compute error: ‘+e.message;
+renderBacktest();return;
+}
+try{
+renderBacktest();
+}catch(e){
+document.getElementById(‘tab3’).innerHTML=’<div class="error-box">Render error: ‘+e.message+’</div><div class="card" style="text-align:center;padding:20px;color:#6a5a3a">’+analyzed.length+’ games analyzed successfully. Refresh and try again.</div>’;
+}
+},300);
+return;
+}
+var batch=games.slice(i,i+2);i+=2;
+S.btProgress=‘Analyzing ‘+Math.min(i,games.length)+’/’+games.length+’ — ‘+analyzed.length+’ ok, ‘+errors+’ failed’;
+renderBacktest();
+Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res){
+res.forEach(function(r){
+if(r.status===‘fulfilled’) analyzed.push(r.value);
+else errors++;
+});
+setTimeout(next,100);
+}).catch(function(){ errors+=batch.length; setTimeout(next,100); });
+}
+setTimeout(next,200);
+}).catch(function(e){
+S.btError=’Schedule fetch failed: ’+e.message;
+S.btLoading=false;renderBacktest();
+});
 }
 // ── INIT ──────────────────────────────────────────────────────────────────────
 renderBoard();
