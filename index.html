@@ -108,7 +108,16 @@ function fetchGames(date) {
       return {
         gamePk:g.gamePk, venue:(g.venue&&g.venue.name)||'',
         time:g.gameDate?new Date(g.gameDate).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'',
-        weather:g.weather?g.weather.temp+'F, '+g.weather.condition+', wind '+g.weather.wind:null,
+        weather:(function(){
+          if(!g.weather) return null;
+          var t=g.weather.temp,cd=g.weather.condition,w=g.weather.wind;
+          if(!t&&!cd&&!w) return null;
+          var parts=[];
+          if(t) parts.push(t+'F');
+          if(cd) parts.push(cd);
+          if(w) parts.push('wind '+w);
+          return parts.join(', ');
+        })(),
         away:{id:g.teams.away.team.id,name:g.teams.away.team.name,pitcherId:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id)||null,pitcherName:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName)||'TBD'},
         home:{id:g.teams.home.team.id,name:g.teams.home.team.name,pitcherId:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id)||null,pitcherName:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName)||'TBD'}
       };
@@ -454,9 +463,9 @@ function renderBoard() {
       html+='<div style="flex:1"><span style="font-size:13px;font-weight:700;color:#e0b040">'+r.winner+'</span><span style="font-size:11px;color:#6a5a3a;margin:0 6px">def.</span><span style="font-size:13px;color:#555">'+(r.winner===r.aName?r.bName:r.aName)+'</span></div>';
       html+='<div style="display:flex;gap:8px;align-items:center"><span style="font-size:12px;font-family:monospace;color:'+(r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';font-weight:700">'+r.winnerML+'</span><span style="font-size:11px;color:#c8b890">'+(r.winnerP*100).toFixed(0)+'%</span><span style="font-size:10px;font-weight:700;color:'+confCol(r.confidence)+'">'+r.confidence+'</span></div>';
       html+='</div><div style="margin-top:3px;font-size:10px;color:#6a5a3a">'+r.time+' · O/U '+r.ou+'</div></div>';
-      html+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
+      html+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">';
       html+='<span style="font-size:9px;color:#2e2416;white-space:nowrap">Book ML:</span>';
-      html+='<input type="text" placeholder="+110" value="'+(S.bookOdds[r.gamePk]||'')+'" data-gpk="'+r.gamePk+'" oninput="setBookOdd(this)" style="width:64px;border-color:'+(S.bookOdds[r.gamePk]?'#3a5a3a':'#2e2416')+';color:'+(S.bookOdds[r.gamePk]?'#5aba8a':'#6a5a3a')+';font-size:11px;padding:3px 6px;text-align:center">';
+      html+='<input type="text" placeholder="+110" value="'+(S.bookOdds[r.gamePk]||'')+'" data-gpk="'+r.gamePk+'" onclick="event.stopPropagation()" oninput="setBookOdd(this)" style="width:64px;border-color:'+(S.bookOdds[r.gamePk]?'#3a5a3a':'#2e2416')+';color:'+(S.bookOdds[r.gamePk]?'#5aba8a':'#6a5a3a')+';font-size:11px;padding:3px 6px;text-align:center">';
       html+=edgeStr+'</div></div>';
     });
     html+='</div>';
@@ -506,9 +515,10 @@ function renderDetail() {
   var bookML=S.bookOdds[r.gamePk]||null;
   var effectiveML=bookML||r.winnerML;
   var edge=bookML?calcEdge(r.winnerP,bookML):null;
-  var k=kelly(r.winnerP,effectiveML)*100;
-  var stake=(k/100*S.bankroll).toFixed(2);
-  var win=((mlToDecimal(effectiveML)-1)*parseFloat(stake)).toFixed(2);
+  // Kelly needs real book odds — without them, model ML = fair price = ~0 edge
+  var k=bookML?kelly(r.winnerP,bookML)*100:0;
+  var stake=bookML?(k/100*S.bankroll).toFixed(2):'—';
+  var win=bookML?((mlToDecimal(bookML)-1)*(k/100*S.bankroll)).toFixed(2):'—';
   var html='';
   if(r.venue||r.weather) {
     html+='<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.02);border:1px solid #252015;border-radius:8px;display:flex;gap:12px;flex-wrap:wrap">';
@@ -532,10 +542,16 @@ function renderDetail() {
   html+='<div class="card"><div class="lbl">Factor Breakdown</div>';
   r.factors.forEach(function(f){html+=factorRow(f);});
   html+='<div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#444"><span>■ <span style="color:#c8922a">'+r.aName+' edge</span></span><span>■ <span style="color:#3a6a9a">'+r.bName+' edge</span></span></div></div>';
-  html+='<div class="card"><div class="lbl" style="color:#5aba8a">Kelly Stake</div><div class="kelly-grid">';
-  html+='<div class="kelly-box" style="background:rgba(58,138,90,.06);border:1px solid #3a8a5a"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Recommended</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#5aba8a">$'+stake+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+k.toFixed(1)+'% of $'+S.bankroll+'</div>'+(edge!==null?'<div style="margin-top:4px">'+edgeBadge(edge)+'</div>':'')+'</div>';
-  html+='<div class="kelly-box" style="background:rgba(255,255,255,.02);border:1px solid #2e2416"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">If Win</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#c8922a">+$'+win+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+r.winner+' · '+effectiveML+'</div><div style="font-size:10px;color:#2e2416;margin-top:1px">'+(r.winnerP*100).toFixed(1)+'% model</div></div>';
-  html+='</div></div>';
+  html+='<div class="card"><div class="lbl" style="color:#5aba8a">Kelly Stake</div>';
+  if(!bookML){
+    html+='<div style="background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px;padding:14px;text-align:center"><div style="font-size:13px;color:#6a5a3a;margin-bottom:6px">Enter Book ML to calculate stake</div><div style="font-size:11px;color:#2e2416;line-height:1.6">Go to Daily Board → find this game → type the sportsbook moneyline for '+r.winner+' into the Book ML field. The app will calculate your edge and optimal bet size.</div></div>';
+  } else {
+    html+='<div class="kelly-grid">';
+    html+='<div class="kelly-box" style="background:rgba(58,138,90,.06);border:1px solid #3a8a5a"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Recommended</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#5aba8a">$'+stake+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+k.toFixed(1)+'% of $'+S.bankroll+'</div>'+(edge!==null?'<div style="margin-top:4px">'+edgeBadge(edge)+'</div>':'')+'</div>';
+    html+='<div class="kelly-box" style="background:rgba(255,255,255,.02);border:1px solid #2e2416"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">If Win</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#c8922a">+$'+win+'</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">'+r.winner+' · '+bookML+' (book)</div><div style="font-size:10px;color:#2e2416;margin-top:1px">'+(r.winnerP*100).toFixed(1)+'% model</div></div>';
+    html+='</div>';
+  }
+  html+='</div>';
   document.getElementById('tab1').innerHTML=html;
 }
 
@@ -686,7 +702,12 @@ function doBacktest() {
     if(!games.length){S.btError='No completed games found.';S.btLoading=false;renderBacktest();return;}
     var analyzed=[],i=0;
     function next() {
-      if(i>=games.length){S.btLoading=false;S.btResults=computeBacktest(analyzed,S.bankroll);renderBacktest();return;}
+      if(i>=games.length){
+        S.btLoading=false;
+        if(!analyzed.length){S.btError='Could not analyze games — try a shorter range or check your internet connection.';renderBacktest();return;}
+        try{S.btResults=computeBacktest(analyzed,S.bankroll);}catch(e){S.btError='Compute error: '+e.message;renderBacktest();return;}
+        renderBacktest();return;
+      }
       var batch=games.slice(i,i+4);i+=4;
       S.btProgress='Analyzed '+Math.min(i,games.length)+' / '+games.length+'...';renderBacktest();
       Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res) {
