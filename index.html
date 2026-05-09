@@ -223,6 +223,109 @@ function cachedStats(id,yr) {
   });
 }
 
+
+// ── KALSHI API ────────────────────────────────────────────────────────────────
+var KALSHI = 'https://external-api.kalshi.com/trade-api/v2';
+
+// Convert Kalshi price (0-1) to American moneyline
+function priceToML(price) {
+  price = parseFloat(price);
+  if (!price || isNaN(price)) return null;
+  if (price >= 0.5) return '-' + Math.round(price / (1 - price) * 100);
+  return '+' + Math.round((1 - price) / price * 100);
+}
+
+// Check if event title mentions both teams
+function titleMatchesGame(title, awayName, homeName) {
+  var t = (title || '').toLowerCase();
+  var away = awayName.split(' ').pop().toLowerCase();
+  var home = homeName.split(' ').pop().toLowerCase();
+  return t.includes(away) || t.includes(home);
+}
+
+// Fetch Kalshi MLB game-winner odds and match to our games
+function fetchKalshiOdds(results) {
+  // Try several series tickers Kalshi uses for MLB game winners
+  var attempts = [
+    KALSHI + '/events?series_ticker=KXMLB&status=open&limit=200',
+    KALSHI + '/events?category=Sports&status=open&limit=500',
+    KALSHI + '/markets?series_ticker=KXMLB&status=open&limit=200',
+  ];
+
+  function tryNext(idx) {
+    if (idx >= attempts.length) return Promise.resolve({});
+    return fetch(attempts[idx]).then(function(r) {
+      if (!r.ok) return tryNext(idx + 1);
+      return r.json().then(function(data) {
+        var items = data.events || data.markets || [];
+        if (!items.length) return tryNext(idx + 1);
+        return matchKalshiToGames(items, results, data.events ? 'events' : 'markets');
+      });
+    }).catch(function() { return tryNext(idx + 1); });
+  }
+
+  return tryNext(0).catch(function() { return {}; });
+}
+
+function matchKalshiToGames(items, results, type) {
+  var odds = {};
+  var promises = [];
+
+  results.forEach(function(game) {
+    var awayLast = game.aName.split(' ').pop().toLowerCase();
+    var homeLast = game.bName.split(' ').pop().toLowerCase();
+
+    // Find matching Kalshi item
+    var match = null;
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var title = (item.title || item.yes_sub_title || item.subtitle || '').toLowerCase();
+      if (title.includes(awayLast) && title.includes(homeLast)) {
+        match = item; break;
+      }
+      // Try partial match
+      if (!match && (title.includes(awayLast) || title.includes(homeLast))) {
+        match = item;
+      }
+    }
+
+    if (!match) return;
+
+    if (type === 'markets') {
+      // Direct market — get price for predicted winner
+      var price = parseFloat(match.yes_bid_dollars) || parseFloat(match.last_price_dollars);
+      var matchTitle = (match.yes_sub_title || match.title || '').toLowerCase();
+      var teamName = matchTitle.includes(game.winner.split(' ').pop().toLowerCase())
+        ? game.winner : null;
+      if (price && teamName) {
+        odds[game.gamePk] = priceToML(price);
+      }
+    } else {
+      // Event — need to fetch its markets
+      var eventTicker = match.event_ticker || match.ticker;
+      if (!eventTicker) return;
+      promises.push(
+        fetch(KALSHI + '/markets?event_ticker=' + eventTicker + '&status=open').then(function(r) {
+          if (!r.ok) return;
+          return r.json().then(function(md) {
+            var markets = md.markets || [];
+            var winnerLast = game.winner.split(' ').pop().toLowerCase();
+            markets.forEach(function(mkt) {
+              var mTitle = (mkt.yes_sub_title || mkt.title || '').toLowerCase();
+              if (mTitle.includes(winnerLast)) {
+                var price = parseFloat(mkt.yes_bid_dollars) || parseFloat(mkt.last_price_dollars);
+                if (price) odds[game.gamePk] = priceToML(price);
+              }
+            });
+          });
+        }).catch(function(){})
+      );
+    }
+  });
+
+  return Promise.all(promises).then(function() { return odds; });
+}
+
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 var AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
 var AVG_HIT={ba:0.250,obp:0.320,slg:0.415,woba:0.315,babip:0.295};
@@ -451,6 +554,28 @@ function showTab(n) {
 }
 
 // ── TAB 0: DAILY BOARD ────────────────────────────────────────────────────────
+function autoFillKalshi() {
+  var btn = document.getElementById('kalshi-btn');
+  if (btn) { btn.textContent = '⏳ Fetching Kalshi...'; btn.disabled = true; }
+  fetchKalshiOdds(S.results).then(function(odds) {
+    var filled = 0;
+    Object.keys(odds).forEach(function(gpk) {
+      if (odds[gpk]) { S.bookOdds[gpk] = odds[gpk]; filled++; }
+    });
+    lsSet('dm-bookodds', S.bookOdds);
+    if (filled > 0) {
+      S.parlays = buildParlays(S.results, S.bookOdds, S.minEdge);
+      alert('Filled ' + filled + ' Kalshi lines! Edge calculations updated.');
+    } else {
+      alert('No Kalshi MLB markets found for today. They may not be open yet, or the API returned no matches. Try entering odds manually.');
+    }
+    renderBoard();
+  }).catch(function(e) {
+    alert('Kalshi fetch failed: ' + e.message);
+    renderBoard();
+  });
+}
+
 function renderBoard() {
   var html='<div class="card">';
   html+='<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
@@ -462,7 +587,11 @@ function renderBoard() {
   html+='</div>';
   if(S.error) html+='<div class="error-box">'+S.error+'</div>';
   if(S.results.length) {
-    html+='<div class="card"><div class="lbl">'+S.results.length+' Games — '+S.date+'</div>';
+    html+='<div class="card">';
+html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">';
+html+='<div class="lbl" style="margin-bottom:0">'+S.results.length+' Games — '+S.date+'</div>';
+html+='<button onclick="autoFillKalshi()" id="kalshi-btn" style="padding:6px 14px;border-radius:6px;border:1px solid #3a5a3a;background:rgba(90,186,138,0.1);color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:1px">⚡ Auto-fill Kalshi Odds</button>';
+html+='</div>';
     var sorted=S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;});
     sorted.forEach(function(r,i) {
       var edge=S.bookOdds[r.gamePk]?calcEdge(r.winnerP,S.bookOdds[r.gamePk]):null;
