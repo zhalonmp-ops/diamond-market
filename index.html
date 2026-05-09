@@ -920,6 +920,11 @@ html+=’<button class=“primary” id=“analyze-btn” ‘+(S.loading?‘disa
 html+=’</div>’;
 if(S.loading) html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.progress+’</div>’;
 html+=’</div>’;
+html+=’<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.01);border:1px solid #1a1a0a;border-radius:8px">’;
+html+=’<div style="display:flex;justify-content:space-between;align-items:center">’;
+html+=’<span style="font-size:9px;color:#3a3020;letter-spacing:2px">KALSHI API DEBUG</span>’;
+html+=’<button onclick="debugKalshi()" style="padding:3px 10px;border-radius:4px;border:1px solid #2e2416;background:transparent;color:#5aba8a;font-size:10px;cursor:pointer">Test Kalshi API</button>’;
+html+=’</div><div id="kalshi-debug" style="font-size:10px;color:#4a4020;margin-top:4px">Tap to see raw Kalshi response</div></div>’;
 if(S.error) html+=’<div class="error-box">’+S.error+’</div>’;
 // Kalshi debug section
 html+=’<div style="margin-bottom:14px;padding:10px 14px;background:rgba(255,255,255,.01);border:1px solid #1a1a0a;border-radius:8px">’;
