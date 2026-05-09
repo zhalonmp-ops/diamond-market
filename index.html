@@ -226,6 +226,7 @@ function cachedStats(id,yr) {
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 var AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
 var AVG_HIT={ba:0.250,obp:0.320,slg:0.415,woba:0.315,babip:0.295};
+var AVG_HIT={ba:0.250,obp:0.320,slg:0.415,woba:0.315,babip:0.295};
 var AVG_PITCH={teamEra:4.20,teamWhip:1.28,teamK9:8.5,teamFip:4.05,saves:25,holds:45,blownSaves:10};
 
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
@@ -389,8 +390,17 @@ function analyzeGame(game,date) {
 }
 
 function analyzeGameCached(game,yr) {
-  return Promise.all([fetchStarter(game.away.pitcherId,yr),fetchStarter(game.home.pitcherId,yr),cachedStats(game.away.id,yr),cachedStats(game.home.id,yr),fetchRecent(game.away.id,game.date),fetchRecent(game.home.id,game.date),fetchH2H(game.away.id,game.home.id,yr)]).then(function(r) {
-    var csA=r[2],csB=r[3];
+  return Promise.all([
+    fetchStarter(game.away.pitcherId,yr).catch(function(){return null;}),
+    fetchStarter(game.home.pitcherId,yr).catch(function(){return null;}),
+    cachedStats(game.away.id,yr),
+    cachedStats(game.home.id,yr),
+    fetchRecent(game.away.id,game.date).catch(function(){return {winPct:0.500};}),
+    fetchRecent(game.home.id,game.date).catch(function(){return {winPct:0.500};}),
+    fetchH2H(game.away.id,game.home.id,yr).catch(function(){return null;})
+  ]).then(function(r) {
+    var csA=r[2]||{hit:AVG_HIT,pit:null,def:{fieldingPct:0.983,errors:80},stand:{rdiff:0,pct:0.500}};
+    var csB=r[3]||{hit:AVG_HIT,pit:null,def:{fieldingPct:0.983,errors:80},stand:{rdiff:0,pct:0.500}};
     var A={name:game.away.name,pitcherName:game.away.pitcherName,pitch:blendPitch(r[0],csA.pit),hit:csA.hit,def:csA.def,recent:r[4]||{winPct:0.500},stand:csA.stand||{rdiff:0,pct:0.500}};
     var B={name:game.home.name,pitcherName:game.home.pitcherName,pitch:blendPitch(r[1],csB.pit),hit:csB.hit,def:csB.def,recent:r[5]||{winPct:0.500},stand:csB.stand||{rdiff:0,pct:0.500}};
     var result=runModel(A,B,r[6]);
@@ -696,29 +706,46 @@ function renderBacktest() {
 }
 
 function doBacktest() {
-  S.btLoading=true;S.btError='';S.btResults=null;S.btProgress='Fetching completed games...';renderBacktest();
+  S.btLoading=true;S.btError='';S.btResults=null;
+  S.btProgress='Fetching completed games...';
+  renderBacktest();
   var yr=S.btEnd.slice(0,4);
   fetchCompleted(S.btStart,S.btEnd).then(function(games) {
-    if(!games.length){S.btError='No completed games found.';S.btLoading=false;renderBacktest();return;}
-    var analyzed=[],i=0;
+    if(!games.length){
+      S.btError='No games found between '+S.btStart+' and '+S.btEnd+'. Try a range within April-October.';
+      S.btLoading=false;renderBacktest();return;
+    }
+    S.btProgress='Found '+games.length+' games. Analyzing in batches...';
+    renderBacktest();
+    var analyzed=[],errors=0,i=0;
     function next() {
       if(i>=games.length){
-        S.btLoading=false;
-        if(!analyzed.length){S.btError='Could not analyze games — try a shorter range or check your internet connection.';renderBacktest();return;}
-        try{S.btResults=computeBacktest(analyzed,S.bankroll);}catch(e){S.btError='Compute error: '+e.message;renderBacktest();return;}
+        S.btLoading=false;S.btProgress='';
+        if(!analyzed.length){
+          S.btError='0/'+games.length+' games analyzed ('+errors+' failed). The MLB API may not have full stats for this range yet. Try a more recent 2-week window.';
+          renderBacktest();return;
+        }
+        try{ S.btResults=computeBacktest(analyzed,S.bankroll); }
+        catch(e){ S.btError='Results error: '+e.message; renderBacktest();return; }
         renderBacktest();return;
       }
-      var batch=games.slice(i,i+4);i+=4;
-      S.btProgress='Analyzed '+Math.min(i,games.length)+' / '+games.length+'...';renderBacktest();
-      Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res) {
-        res.forEach(function(r){if(r.status==='fulfilled')analyzed.push(r.value);});
-        next();
-      });
+      var batch=games.slice(i,i+2);i+=2;
+      S.btProgress='Analyzing '+Math.min(i,games.length)+'/'+games.length+' — '+analyzed.length+' ok, '+errors+' failed';
+      renderBacktest();
+      Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res){
+        res.forEach(function(r){
+          if(r.status==='fulfilled') analyzed.push(r.value);
+          else errors++;
+        });
+        setTimeout(next,100);
+      }).catch(function(){ errors+=batch.length; setTimeout(next,100); });
     }
-    next();
-  }).catch(function(e){S.btError='Error: '+e.message;S.btLoading=false;renderBacktest();});
+    setTimeout(next,200);
+  }).catch(function(e){
+    S.btError='Schedule fetch failed: '+e.message;
+    S.btLoading=false;renderBacktest();
+  });
 }
-
 // ── INIT ──────────────────────────────────────────────────────────────────────
 renderBoard();
 </script>
