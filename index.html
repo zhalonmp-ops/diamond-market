@@ -265,89 +265,75 @@ function teamInTitle(title, teamName) {
 }
 
 function fetchKalshiOdds(results) {
-  // Try multiple series tickers Kalshi uses for MLB game winners
-  var tickers = [
-    'KXMLBGW','KXMLB','MLBGW','KXBASEBALLGW','MLBGAME','BASEBALL',
-    'KXMLBWIN','MLBWIN','PROBASEBALL','KXPROBASEBALL','BASEBALLGW'
-  ];
-  var baseURL = KALSHI + '/events?status=open&limit=200&series_ticker=';
-
-  function tryTicker(idx) {
-    if (idx >= tickers.length) {
-      // Last resort: fetch all open sports events
-      // Build list of all team abbreviations for today's games
-    var abbrs = [];
-    results.forEach(function(g){
-      if(TEAM_ABBR[g.aName]) abbrs.push(TEAM_ABBR[g.aName].toLowerCase());
-      if(TEAM_ABBR[g.bName]) abbrs.push(TEAM_ABBR[g.bName].toLowerCase());
+  // Series ticker confirmed: KXMLBGAME
+  // Event format: KXMLBGAME-26MAY091610WSHMIA (year+month+day+time+awayabbr+homeabbr)
+  return fetch(KALSHI + '/events?series_ticker=KXMLBGAME&status=open&limit=100')
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(d) {
+      var events = d.events || [];
+      if (!events.length) throw new Error('No KXMLBGAME events returned');
+      return matchEventsByTicker(events, results);
+    })
+    .catch(function(e) {
+      console.warn('Kalshi fetch failed:', e.message);
+      return {};
     });
-    return fetch(KALSHI + '/events?status=open&limit=1000').then(function(r){
-        return r.ok ? r.json() : {events:[]};
-      }).then(function(d){
-        var evs = (d.events||[]).filter(function(e){
-          var t=(e.title||'').toLowerCase();
-          if(t.includes('baseball')||t.includes('mlb')) return true;
-          return abbrs.some(function(a){ return t.includes(a); });
-        });
-        return evs.length ? matchEvents(evs, results) : Promise.resolve({});
-      }).catch(function(){ return {}; });
-    }
-    return fetch(baseURL + tickers[idx]).then(function(r){
-      if (!r.ok) return tryTicker(idx+1);
-      return r.json().then(function(d){
-        var evs = d.events || [];
-        if (!evs.length) return tryTicker(idx+1);
-        return matchEvents(evs, results);
-      });
-    }).catch(function(){ return tryTicker(idx+1); });
-  }
-
-  return tryTicker(0);
 }
 
-function matchEvents(events, results) {
+function matchEventsByTicker(events, results) {
   var odds = {};
   var promises = [];
 
   results.forEach(function(game) {
+    var awayAbbr = (TEAM_ABBR[game.aName] || '').toUpperCase();
+    var homeAbbr = (TEAM_ABBR[game.bName] || '').toUpperCase();
+    if (!awayAbbr || !homeAbbr) return;
+
+    // Match event by ticker containing both team abbreviations
+    // e.g. KXMLBGAME-26MAY091610WSHMIA -> WSH + MIA
     var matched = null;
     for (var i = 0; i < events.length; i++) {
-      var e = events[i];
-      var t = (e.title || e.subtitle || '').toLowerCase();
-      var awayMatch = teamInTitle(t, game.aName);
-      var homeMatch = teamInTitle(t, game.bName);
-      if (awayMatch && homeMatch) { matched = e; break; }
+      var ticker = (events[i].event_ticker || '').toUpperCase();
+      if (ticker.includes(awayAbbr) && ticker.includes(homeAbbr)) {
+        matched = events[i]; break;
+      }
     }
     if (!matched) return;
 
-    var ticker = matched.event_ticker || matched.ticker;
-    if (!ticker) return;
+    var eventTicker = matched.event_ticker;
+    var gamePk = game.gamePk;
+    var winnerAbbr = (TEAM_ABBR[game.winner] || '').toUpperCase();
+    var winnerNick = game.winner.split(' ').pop().toLowerCase();
 
     promises.push(
-      fetch(KALSHI + '/markets?event_ticker=' + ticker + '&status=open').then(function(r){
-        if (!r.ok) return;
-        return r.json().then(function(md){
+      fetch(KALSHI + '/markets?event_ticker=' + eventTicker + '&status=open')
+        .then(function(r) { return r.json(); })
+        .then(function(md) {
           var markets = md.markets || [];
-          var winnerWords = game.winner.toLowerCase().split(' ');
-          markets.forEach(function(mkt){
-            var mt = (mkt.yes_sub_title || mkt.title || '').toLowerCase();
-            var isWinner = winnerWords.some(function(w){ return w.length>3 && mt.includes(w); });
+          markets.forEach(function(mkt) {
+            var sub = (mkt.yes_sub_title || mkt.title || '').toLowerCase();
+            var tkr = (mkt.ticker || '').toUpperCase();
+            // Match if market title or ticker mentions the winning team
+            var isWinner = sub.includes(winnerNick) || tkr.includes(winnerAbbr);
             if (isWinner) {
-              // Use mid-price between bid and ask for best estimate
-              var bid = parseFloat(mkt.yes_bid_dollars)||0;
-              var ask = parseFloat(mkt.yes_ask_dollars)||0;
-              var price = (bid && ask) ? (bid+ask)/2 : (bid||ask||parseFloat(mkt.last_price_dollars)||0);
+              var bid = parseFloat(mkt.yes_bid_dollars) || 0;
+              var ask = parseFloat(mkt.yes_ask_dollars) || 0;
+              var price = (bid && ask) ? (bid + ask) / 2 : bid || ask || parseFloat(mkt.last_price_dollars) || 0;
               var ml = priceToML(price);
-              if (ml) odds[game.gamePk] = ml;
+              if (ml) odds[gamePk] = ml;
             }
           });
-        });
-      }).catch(function(){})
+        })
+        .catch(function() {})
     );
   });
 
-  return Promise.all(promises).then(function(){ return odds; });
+  return Promise.all(promises).then(function() { return odds; });
 }
+
 
 // ── MODEL ─────────────────────────────────────────────────────────────────────
 var AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
@@ -592,8 +578,7 @@ function autoFillKalshi() {
       alert('Auto-filled ' + filled + ' Kalshi lines! Check Best Plays for edge calculations.');
     } else {
       // Show team names we searched for to help debug
-      var teams = S.results.slice(0,3).map(function(r){return r.winner;}).join(', ');
-      alert('No Kalshi markets matched today\'s games (' + teams + '...). \n\nKalshi markets for today\'s MLB games may not be open yet (usually opens morning of game day). Try again closer to game time, or enter odds manually.');
+      alert('No Kalshi markets matched. The series is KXMLBGAME — check console for details.');
     }
     renderBoard();
   }).catch(function(e) {
@@ -920,18 +905,10 @@ html+=’<button class=“primary” id=“analyze-btn” ‘+(S.loading?‘disa
 html+=’</div>’;
 if(S.loading) html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.progress+’</div>’;
 html+=’</div>’;
-html+=’<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.01);border:1px solid #1a1a0a;border-radius:8px">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center">’;
-html+=’<span style="font-size:9px;color:#3a3020;letter-spacing:2px">KALSHI API DEBUG</span>’;
-html+=’<button onclick="debugKalshi()" style="padding:3px 10px;border-radius:4px;border:1px solid #2e2416;background:transparent;color:#5aba8a;font-size:10px;cursor:pointer">Test Kalshi API</button>’;
-html+=’</div><div id="kalshi-debug" style="font-size:10px;color:#4a4020;margin-top:4px">Tap to see raw Kalshi response</div></div>’;
+
 if(S.error) html+=’<div class="error-box">’+S.error+’</div>’;
 // Kalshi debug section
 html+=’<div style="margin-bottom:14px;padding:10px 14px;background:rgba(255,255,255,.01);border:1px solid #1a1a0a;border-radius:8px">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">’;
-html+=’<span style="font-size:9px;color:#3a3020;letter-spacing:2px">KALSHI API DEBUG</span>’;
-html+=’<button onclick="debugKalshi()" style="padding:3px 10px;border-radius:4px;border:1px solid #2e2416;background:transparent;color:#4a4020;font-size:10px;cursor:pointer">Test API</button>’;
-html+=’</div><div id="kalshi-debug" style="font-size:10px;color:#4a4020">Tap Test API to see what Kalshi returns for your market search.</div></div>’;
 if(S.results.length) {
 html+=’<div class="card">’;
 html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">’;
