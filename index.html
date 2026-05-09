@@ -361,7 +361,7 @@ function computeBacktest(results,bankroll) {
   results.forEach(function(r){if(!byDate[r.date])byDate[r.date]=[];byDate[r.date].push(r);});
   var p1Bank=bankroll,p2Bank=bankroll,p3Bank=bankroll,p1Eq=[bankroll],p2Eq=[bankroll],p3Eq=[bankroll],parlayDays=[];
   Object.keys(byDate).sort().forEach(function(date){
-    var plays=buildParlays(byDate[date]);
+    var plays;try{plays=buildParlays(byDate[date]);}catch(e){plays={singles:[],parlays2:[],parlays3:[]};}
     var s=plays.singles[0],p2=plays.parlays2[0],p3=plays.parlays3[0];
     if(s){var k=kelly(s.combinedP,s.legs[0].winnerML)*p1Bank;p1Bank=Math.max(1,p1Bank+(s.legs[0].correct?k*(mlToDecimal(s.legs[0].winnerML)-1):-k));p1Eq.push(parseFloat(p1Bank.toFixed(2)));}
     if(p2){var odds=p2.legs.reduce(function(a,l){return a*mlToDecimal(l.winnerML);},1);var k=kelly(p2.combinedP,'+'+Math.round((odds-1)*100))*p2Bank;p2Bank=Math.max(1,p2Bank+(p2.legs.every(function(l){return l.correct;})?k*(odds-1):-k));p2Eq.push(parseFloat(p2Bank.toFixed(2)));}
@@ -720,14 +720,27 @@ function doBacktest() {
     var analyzed=[],errors=0,i=0;
     function next() {
       if(i>=games.length){
-        S.btLoading=false;S.btProgress='';
+        S.btLoading=false;S.btProgress='Done! '+analyzed.length+' games analyzed.';
+        renderBacktest();
         if(!analyzed.length){
-          S.btError='0/'+games.length+' games analyzed ('+errors+' failed). The MLB API may not have full stats for this range yet. Try a more recent 2-week window.';
-          renderBacktest();return;
+          setTimeout(function(){S.btProgress='';S.btError='0/'+games.length+' analyzed. Try a shorter range.';renderBacktest();},200);
+          return;
         }
-        try{ S.btResults=computeBacktest(analyzed,S.bankroll); }
-        catch(e){ S.btError='Results error: '+e.message; renderBacktest();return; }
-        renderBacktest();return;
+        setTimeout(function(){
+          S.btProgress='';
+          try{
+            S.btResults=computeBacktest(analyzed,S.bankroll);
+          }catch(e){
+            S.btError='Compute error: '+e.message;
+            renderBacktest();return;
+          }
+          try{
+            renderBacktest();
+          }catch(e){
+            document.getElementById('tab3').innerHTML='<div class="error-box">Render error: '+e.message+'</div><div class="card" style="text-align:center;padding:20px;color:#6a5a3a">'+analyzed.length+' games analyzed successfully. Refresh and try again.</div>';
+          }
+        },300);
+        return;
       }
       var batch=games.slice(i,i+2);i+=2;
       S.btProgress='Analyzing '+Math.min(i,games.length)+'/'+games.length+' — '+analyzed.length+' ok, '+errors+' failed';
