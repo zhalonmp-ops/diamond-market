@@ -355,7 +355,7 @@ function computeBacktest(results,bankroll) {
   var buckets=[{label:'54-58%',lo:0.54,hi:0.58},{label:'58-62%',lo:0.58,hi:0.62},{label:'62-66%',lo:0.62,hi:0.66},{label:'66-70%',lo:0.66,hi:0.70},{label:'70%+',lo:0.70,hi:1.00}].map(function(b){
     var gs=results.filter(function(r){return r.winnerP>=b.lo&&r.winnerP<b.hi;});
     var wins=gs.filter(function(r){return r.correct;}).length;
-    return {label:b.label,games:gs.length,wins:wins,actualPct:gs.length?(wins/gs.length*100).toFixed(1):null};
+    return {label:b.label,lo:b.lo,hi:b.hi,games:gs.length,wins:wins,actualPct:gs.length?(wins/gs.length*100).toFixed(1):null};
   });
   var byDate={};
   results.forEach(function(r){if(!byDate[r.date])byDate[r.date]=[];byDate[r.date].push(r);});
