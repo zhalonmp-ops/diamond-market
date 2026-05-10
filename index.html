@@ -76,7 +76,9 @@ function ls(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return n
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 function today(){return new Date().toISOString().slice(0,10);}
 function daysAgo(n){var d=new Date();d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);}
-var S={
+var S;
+try {
+S={
 date:ls(‘dm-date’)||today(),bankroll:ls(‘dm-bankroll’)||1000,
 bookOdds:ls(‘dm-bookodds’)||{},minEdge:ls(‘dm-minedge’)||2,
 btStart:ls(‘dm-btstart’)||daysAgo(30),btEnd:ls(‘dm-btend’)||daysAgo(1),
@@ -84,6 +86,10 @@ results:[],detail:null,parlays:null,
 loading:false,progress:’’,error:’’,
 btResults:null,btLoading:false,btProgress:’’,btError:’’
 };
+} catch(e) {
+// S init failed - use safe defaults
+S={date:today(),bankroll:1000,bookOdds:{},minEdge:2,btStart:daysAgo(30),btEnd:daysAgo(1),results:[],detail:null,parlays:null,loading:false,progress:’’,error:‘S_INIT_FAILED:’+e.message,btResults:null,btLoading:false,btProgress:’’,btError:’’};
+}
 function sSet(k,v){S[k]=v;lsSet(‘dm-’+k,v);}
 
 // ── MLB API ───────────────────────────────────────────────────────────────────
@@ -456,9 +462,10 @@ if(n===4)renderTradeLog();
 // ── TAB 0: DAILY BOARD ────────────────────────────────────────────────────────
 function renderBoard(){
 var el = document.getElementById(‘tab0’);
-if (!el) { alert(‘ERROR: tab0 element not found in DOM’); return; }
-// Simplest possible test - no variables, no concatenation
-el.innerHTML = ‘<div style="color:#5aba8a;font-size:16px;font-weight:700;padding:20px;border:2px solid #5aba8a;margin:10px;border-radius:8px">JS WORKS - renderBoard ran successfully. Tab0 innerHTML was set.</div>’;
+if (!el) { alert(‘ERROR: tab0 not found’); return; }
+var msg = ‘JS WORKS! Date: ’ + S.date + ’ | Bank: ’ + S.bankroll;
+if (S.error) msg += ’ | ERROR: ’ + S.error;
+el.innerHTML = ‘<div style="color:#5aba8a;font-size:14px;font-weight:700;padding:16px;border:2px solid #5aba8a;margin:10px;border-radius:8px">’ + msg + ‘</div>’;
 return;
 var html=’<div class="card">’;
 html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">’;
@@ -800,15 +807,15 @@ var a=document.createElement(‘a’);a.href=url;a.download=‘diamond-market-tr
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
+function showError(msg) {
+var el = document.getElementById(‘tab0’);
+if (el) el.innerHTML = ‘<div style="color:#ff4444;padding:16px;font-size:13px;font-family:monospace;line-height:1.8;border:1px solid red;margin:10px;border-radius:8px"><b>ERROR:</b><br>’ + msg + ‘</div>’;
+}
 window.onerror = function(msg, src, line, col, err) {
-document.getElementById(‘tab0’).innerHTML = ‘<div style="color:#c06060;padding:20px;font-family:monospace;font-size:12px;line-height:1.8"><b>Runtime Error:</b><br>’ + msg + ’<br>Line: ’ + line + ‘<br>’ + (err ? err.stack : ‘’) + ‘</div>’;
+showError(‘onerror: ’ + msg + ’ (line ’ + line + ‘)’);
 return true;
 };
-try {
-renderBoard();
-} catch(e) {
-document.getElementById(‘tab0’).innerHTML = ‘<div style="color:#c06060;padding:20px;font-family:monospace;font-size:12px;line-height:1.8"><b>Init Error:</b><br>’ + e.message + ‘<br>’ + e.stack + ‘</div>’;
-}
+try { renderBoard(); } catch(e) { showError(‘renderBoard threw: ’ + e.message + ‘<br>’ + (e.stack||’’).replace(/\n/g,’<br>’)); }
 </script>
 
 </body>
