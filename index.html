@@ -455,6 +455,29 @@ if(n===4)renderTradeLog();
 
 // ── TAB 0: DAILY BOARD ────────────────────────────────────────────────────────
 function renderBoard(){
+// DIAGNOSTIC: test if innerHTML works at all
+var el = document.getElementById(‘tab0’);
+if (!el) { alert(‘tab0 not found!’); return; }
+
+// Build minimal HTML with no variable dependencies
+var html = ‘<div style="background:#1a1a0a;border:1px solid #c8922a;border-radius:10px;padding:20px;margin:10px">’;
+html += ‘<div style="color:#c8922a;font-size:16px;font-weight:700;margin-bottom:10px">Daily Board Loading…</div>’;
+html += ’<div style="color:#6a5a3a;font-size:12px;margin-bottom:10px">Date: ’ + S.date + ’ | Bankroll: ’ + S.bankroll + ‘</div>’;
+
+try {
+html += ‘<input type="date" value="' + S.date + '" style="background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;padding:9px 12px;margin-bottom:10px;display:block;width:100%">’;
+html += ‘<button onclick="doAnalyze()" style="padding:10px 20px;border-radius:6px;border:none;background:linear-gradient(135deg,#c8922a,#9a6e18);color:#080600;font-weight:900;font-size:14px;cursor:pointer;width:100%">ANALYZE ALL GAMES</button>’;
+html += ‘</div>’;
+el.innerHTML = html;
+} catch(e) {
+el.innerHTML = ’<div style="color:red;padding:20px">innerHTML error: ’ + e.message + ‘</div>’;
+return;
+}
+
+// Now set up event listeners
+var di = document.querySelector(‘input[type=date]’);
+if (di) di.onchange = function(){ sSet(‘date’, this.value); S.results=[]; S.parlays=null; renderBoard(); };
+return; // Stop here for now - just test basic rendering
 var html=’<div class="card">’;
 html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">’;
 html+=’<input type="date" id="date-in" value="'+S.date+'" style="flex:1 1 140px;font-size:14px">’;
