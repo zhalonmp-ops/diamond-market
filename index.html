@@ -795,7 +795,15 @@ var a=document.createElement(‘a’);a.href=url;a.download=‘diamond-market-tr
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
+window.onerror = function(msg, src, line, col, err) {
+document.getElementById(‘tab0’).innerHTML = ‘<div style="color:#c06060;padding:20px;font-family:monospace;font-size:12px;line-height:1.8"><b>Runtime Error:</b><br>’ + msg + ’<br>Line: ’ + line + ‘<br>’ + (err ? err.stack : ‘’) + ‘</div>’;
+return true;
+};
+try {
 renderBoard();
+} catch(e) {
+document.getElementById(‘tab0’).innerHTML = ‘<div style="color:#c06060;padding:20px;font-family:monospace;font-size:12px;line-height:1.8"><b>Init Error:</b><br>’ + e.message + ‘<br>’ + e.stack + ‘</div>’;
+}
 </script>
 
 </body>
