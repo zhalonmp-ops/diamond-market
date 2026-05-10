@@ -61,11 +61,23 @@ input[type=date],input[type=number],input[type=text]{background:#0a0907;border:1
 <div id="tab3" class="panel"></div>
 <div id="tab4" class="panel"></div>
 <script>
-// Early test - runs before any function definitions
-try {
-  var _el = document.getElementById('tab0');
-  if (_el) _el.style.outline = '4px solid lime';
-} catch(_e) {}
+// This script runs before the main script
+// window.onerror here will catch parse errors in the main script below
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('tab0');
+  if (el) {
+    el.innerHTML = '<div style="color:#ff4444;padding:16px;font-size:12px;font-family:monospace;line-height:1.8;border:2px solid red;margin:10px;border-radius:8px;word-break:break-all">'
+      + '<b>SCRIPT ERROR CAUGHT:</b><br>'
+      + msg + '<br>'
+      + 'Line: ' + line + ' Col: ' + col + '<br>'
+      + (err && err.stack ? err.stack.replace(/</g,'&lt;') : 'no stack')
+      + '</div>';
+  }
+  return true;
+};
+// Mark that early script ran
+var _el = document.getElementById('tab0');
+if (_el) _el.style.outline = '4px solid lime';
 </script>
 <script>
 // -- CONSTANTS -----------------------------------------------------------------
