@@ -3,6 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
+<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;">
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Diamond Market</title>
 <style>
@@ -60,7 +61,14 @@ input[type=date],input[type=number],input[type=text]{background:#0a0907;border:1
 <div id="tab3" class="panel"></div>
 <div id="tab4" class="panel"></div>
 <script>
-// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+// Early test - runs before any function definitions
+try {
+  var _el = document.getElementById('tab0');
+  if (_el) _el.style.outline = '4px solid lime';
+} catch(_e) {}
+</script>
+<script>
+// -- CONSTANTS -----------------------------------------------------------------
 var PARK = {'Arizona Diamondbacks':101,'Atlanta Braves':100,'Baltimore Orioles':100,'Boston Red Sox':104,'Chicago Cubs':103,'Chicago White Sox':100,'Cincinnati Reds':105,'Cleveland Guardians':99,'Colorado Rockies':115,'Detroit Tigers':97,'Houston Astros':102,'Kansas City Royals':99,'Los Angeles Angels':98,'Los Angeles Dodgers':98,'Miami Marlins':97,'Milwaukee Brewers':100,'Minnesota Twins':99,'New York Mets':98,'New York Yankees':102,'Oakland Athletics':97,'Philadelphia Phillies':103,'Pittsburgh Pirates':97,'San Diego Padres':96,'San Francisco Giants':97,'Seattle Mariners':96,'St. Louis Cardinals':98,'Tampa Bay Rays':97,'Texas Rangers':103,'Toronto Blue Jays':102,'Washington Nationals':99};
 var ABBR = {'Arizona Diamondbacks':'ARI','Atlanta Braves':'ATL','Baltimore Orioles':'BAL','Boston Red Sox':'BOS','Chicago Cubs':'CHC','Chicago White Sox':'CWS','Cincinnati Reds':'CIN','Cleveland Guardians':'CLE','Colorado Rockies':'COL','Detroit Tigers':'DET','Houston Astros':'HOU','Kansas City Royals':'KC','Los Angeles Angels':'LAA','Los Angeles Dodgers':'LAD','Miami Marlins':'MIA','Milwaukee Brewers':'MIL','Minnesota Twins':'MIN','New York Mets':'NYM','New York Yankees':'NYY','Oakland Athletics':'OAK','Philadelphia Phillies':'PHI','Pittsburgh Pirates':'PIT','San Diego Padres':'SD','San Francisco Giants':'SF','Seattle Mariners':'SEA','St. Louis Cardinals':'STL','Tampa Bay Rays':'TB','Texas Rangers':'TEX','Toronto Blue Jays':'TOR','Washington Nationals':'WSH'};
 var AVG_SP={era:4.20,whip:1.30,k9:8.8,bb9:3.2,fip:4.05,xfip:4.00,ipsPerStart:5.0};
@@ -71,7 +79,7 @@ var AVG_STAND={rdiff:0,pct:0.500};
 var MLB_API='https://statsapi.mlb.com/api/v1';
 var KALSHI_API='https://external-api.kalshi.com/trade-api/v2';
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
+// – STATE ———————————————————————
 function ls(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 function today(){return new Date().toISOString().slice(0,10);}
@@ -92,7 +100,7 @@ S={date:today(),bankroll:1000,bookOdds:{},minEdge:2,btStart:daysAgo(30),btEnd:da
 }
 function sSet(k,v){S[k]=v;lsSet(‘dm-’+k,v);}
 
-// ── MLB API ───────────────────────────────────────────────────────────────────
+// – MLB API —————————————————————––
 function mlbGet(path){return fetch(MLB_API+path).then(function(r){if(!r.ok)throw new Error(’HTTP ’+r.status);return r.json();});}
 
 function fetchGames(date){
@@ -198,7 +206,7 @@ return _cache[k];
 });
 }
 
-// ── KALSHI API ────────────────────────────────────────────────────────────────
+// – KALSHI API ––––––––––––––––––––––––––––––––
 function priceToML(p){
 p=parseFloat(p);
 if(!p||isNaN(p)||p<=0||p>=1)return null;
@@ -246,7 +254,7 @@ return Promise.all(promises).then(function(){return odds;});
 }).catch(function(){return{};});
 }
 
-// ── MODEL ─────────────────────────────────────────────────────────────────────
+// – MODEL ———————————————————————
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
 function sigmoid(x){return 1/(1+Math.exp(-x));}
 function mlDec(ml){var n=parseInt(ml);return n>0?(n/100)+1:(100/Math.abs(n))+1;}
@@ -399,7 +407,7 @@ return Object.assign({},res,{date:game.date,actualWinner:game.actualWinner,corre
 });
 }
 
-// ── TRADE LOG ─────────────────────────────────────────────────────────────────
+// – TRADE LOG —————————————————————–
 function loadTrades(){try{return JSON.parse(localStorage.getItem(‘dm-trades’)||’[]’);}catch(e){return[];}}
 function saveTrades(t){try{localStorage.setItem(‘dm-trades’,JSON.stringify(t));}catch(e){}}
 function confCol(c){return c===‘High’?’#c8922a’:c===‘Medium’?’#8a8a3a’:’#6a5a3a’;}
@@ -409,7 +417,7 @@ var col=e>=0.05?’#5aba8a’:e>=0.02?’#8aba5a’:’#c0c060’;
 return’<span style="font-size:11px;font-weight:900;font-family:monospace;color:'+col+';background:rgba(90,186,138,0.08);border:1px solid #2a4a2a;border-radius:4px;padding:2px 6px">’+(e>=0?’+’:’’)+( e*100).toFixed(1)+’% EDGE</span>’;
 }
 
-// ── HTML HELPERS ──────────────────────────────────────────────────────────────
+// – HTML HELPERS –––––––––––––––––––––––––––––––
 function winBar(pA,pB){return’<div class="win-bar"><div class="win-a" style="width:'+pA+'%">’+pA+’%</div><div class="win-b" style="width:'+pB+'%">’+pB+’%</div></div>’;}
 function factorRow(f){
 var favA=f.delta>0.005,favB=f.delta<-0.005;
@@ -446,7 +454,7 @@ html+=’</div></div>’;
 return html;
 }
 
-// ── TAB SWITCHING ─────────────────────────────────────────────────────────────
+// – TAB SWITCHING ———————————————————––
 var currentTab=0;
 function showTab(n){
 currentTab=n;
@@ -459,7 +467,7 @@ if(n===3)renderBacktest();
 if(n===4)renderTradeLog();
 }
 
-// ── TAB 0: DAILY BOARD ────────────────────────────────────────────────────────
+// – TAB 0: DAILY BOARD ––––––––––––––––––––––––––––
 function renderBoard(){
 var el = document.getElementById(‘tab0’);
 if (!el) { alert(‘ERROR: tab0 not found’); return; }
@@ -538,7 +546,7 @@ renderBoard();
 });
 }
 
-// ── TAB 1: GAME DETAIL ────────────────────────────────────────────────────────
+// – TAB 1: GAME DETAIL ––––––––––––––––––––––––––––
 function renderDetail(){
 var r=S.detail;
 if(!r){document.getElementById(‘tab1’).innerHTML=’<div class="card" style="text-align:center;padding:32px"><div style="font-size:32px;margin-bottom:10px">🔍</div><div style="color:#6a5a3a">Select a game from Daily Board.</div></div>’;return;}
@@ -587,7 +595,7 @@ saveTrades(trades);
 alert(‘Trade logged! Go to Trade Log to mark result.’);
 }
 
-// ── TAB 2: BEST PLAYS ─────────────────────────────────────────────────────────
+// – TAB 2: BEST PLAYS ———————————————————
 function renderPlays(){
 var html=’<div class="card" style="margin-bottom:14px"><div class="lbl" style="color:#5aba8a">Value Filter</div>’;
 html+=’<div style="font-size:11px;color:#4a5a3a;line-height:1.7;margin-bottom:10px">Enter book odds in Daily Board. Only plays where model beats book implied probability are shown.</div>’;
@@ -609,7 +617,7 @@ document.getElementById(‘tab2’).innerHTML=html;
 function setMinEdge(n){sSet(‘minEdge’,n);renderPlays();}
 function rebuildPlays(){if(S.results.length)S.parlays=buildParlays(S.results,S.bookOdds,S.minEdge);renderPlays();}
 
-// ── TAB 3: SEASON RECORD ──────────────────────────────────────────────────────
+// – TAB 3: SEASON RECORD ——————————————————
 function renderBacktest(){
 var html=’<div class="card" style="margin-bottom:14px"><div class="lbl">Backtest Range</div>’;
 html+=’<div style="font-size:10px;color:#4a4a2a;margin-bottom:10px;line-height:1.6">Uses current season stats. Best with 2-4 week ranges within April-October.</div>’;
@@ -685,7 +693,7 @@ setTimeout(next,200);
 }).catch(function(e){S.btError=’Fetch failed: ’+e.message;S.btLoading=false;renderBacktest();});
 }
 
-// ── TAB 4: TRADE LOG ─────────────────────────────────────────────────────────
+// – TAB 4: TRADE LOG ———————————————————
 function renderTradeLog(){
 var trades=loadTrades();
 var settled=trades.filter(function(t){return t.result===‘win’||t.result===‘loss’;});
@@ -747,7 +755,7 @@ html+=’<button onclick="markLoss('+t.id+')" style="padding:4px 10px;border-rad
 }else{
 var pnlNum=parseFloat(t.pnl)||0;
 html+=’<div style="font-size:18px;font-weight:900;font-family:monospace;color:'+(pnlNum>=0?'#5aba8a':'#c06060')+'">’+(pnlNum>=0?’+’:’’)+’$’+t.pnl+’</div>’;
-html+=’<div style="font-size:10px;color:'+(isWin?'#3a6a3a':'#6a3a3a');+'margin-top:2px">’+(isWin?‘WIN’:‘LOSS’)+’</div>’;
+html+=’<div style="font-size:10px;color:'+(isWin?'#3a6a3a':'#6a3a3a')+';margin-top:2px">’+(isWin?‘WIN’:‘LOSS’)+’</div>’;
 }
 html+=’</div></div>’;
 html+=’<button onclick="delTrade('+t.id+')" style="margin-top:6px;padding:2px 8px;border-radius:3px;border:1px solid #2e2416;background:transparent;color:#3a2a1a;font-size:9px;cursor:pointer">remove</button>’;
@@ -806,7 +814,7 @@ var url=URL.createObjectURL(blob);
 var a=document.createElement(‘a’);a.href=url;a.download=‘diamond-market-trades.csv’;a.click();URL.revokeObjectURL(url);
 }
 
-// ── INIT ──────────────────────────────────────────────────────────────────────
+// – INIT –––––––––––––––––––––––––––––––––––
 function showError(msg) {
 var el = document.getElementById(‘tab0’);
 if (el) el.innerHTML = ‘<div style="color:#ff4444;padding:16px;font-size:13px;font-family:monospace;line-height:1.8;border:1px solid red;margin:10px;border-radius:8px"><b>ERROR:</b><br>’ + msg + ‘</div>’;
